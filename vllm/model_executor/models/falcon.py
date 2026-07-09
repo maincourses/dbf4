@@ -25,15 +25,11 @@ from collections.abc import Iterable
 from itertools import islice
 from typing import TypeAlias
 
-import os
-import re
 import torch
 from torch import nn
 from torch.nn import LayerNorm
 from transformers import FalconConfig as HF_FalconConfig
 
-import vllm.envs as envs
-from vllm.attention.layer import Attention
 from vllm.compilation.decorators import support_torch_compile
 from vllm.config import CacheConfig, VllmConfig
 from vllm.distributed import (
@@ -43,6 +39,7 @@ from vllm.distributed import (
     tensor_model_parallel_all_reduce,
 )
 from vllm.model_executor.layers.activation import get_act_fn
+from vllm.model_executor.layers.attention import Attention
 from vllm.model_executor.layers.linear import (
     ColumnParallelLinear,
     QKVParallelLinear,
@@ -69,8 +66,6 @@ from .utils import (
 )
 
 FalconConfig: TypeAlias = HF_FalconConfig | RWConfig
-from vllm import _custom_ops as ops
-from vllm.model_executor.utils import pad_weight, gemm_bank_conf
 
 
 def _get_alibi_slopes(total_num_heads: int) -> torch.Tensor:
@@ -210,10 +205,6 @@ class FalconAttention(nn.Module):
                 quant_config=quant_config,
                 prefix=f"{prefix}.attn",
             )
-        self.quant_method = None
-        if quant_config is not None:
-            self.quant_method=quant_config.get_name()
-            self.quant_config=quant_config
 
     def forward(
         self,
@@ -221,8 +212,6 @@ class FalconAttention(nn.Module):
         hidden_states: torch.Tensor,
     ) -> torch.Tensor:
         qkv, bias = self.query_key_value(hidden_states)
-        # if os.environ.get('FA_PAD') == '1' and self.quant_method is None:
-        #     qkv = qkv[...,:-32]
         if bias is not None:
             qkv += bias
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
@@ -407,23 +396,13 @@ class FalconModel(nn.Module):
         self.make_empty_intermediate_tensors = make_empty_intermediate_tensors_factory(
             ["hidden_states"], config.hidden_size
         )
-        self.quant_method = None
-        if quant_config is not None:
-            self.quant_method=quant_config.get_name()
-            self.quant_config=quant_config
-        
-        self.use_llama_nn = os.environ.get('LLAMA_NN') == '1'
-        self.use_gemm_pad = os.environ.get('GEMM_PAD') == '1'
-        self.use_fa_pad = os.environ.get('FA_PAD') == '1'
-        self.use_awq_pad = os.environ.get('AWQ_PAD') == '1'
-        self.w8a8_strategy = envs.VLLM_W8A8_BACKEND
 
     def embed_input_ids(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self.word_embeddings(input_ids)
 
     def forward(
         self,
-        input_ids: torch.Tensor,
+        input_ids: torch.Tensor | None,
         positions: torch.Tensor,
         intermediate_tensors: IntermediateTensors | None,
         inputs_embeds: torch.Tensor | None = None,
@@ -495,37 +474,6 @@ class FalconModel(nn.Module):
             weight_loader = getattr(param, "weight_loader", default_weight_loader)
             weight_loader(param, loaded_weight)
             loaded_params.add(name)
-            
-        if self.use_llama_nn and self.quant_method is None :
-            lay_key_words = [
-                "self_attention.query_key_value.weight",
-                "self_attention.dense.weight",
-                "mlp.dense_h_to_4h.weight",
-                "mlp.dense_4h_to_h.weight",
-            ]
-            combined_words = "|".join(lay_key_words)
-            
-            # lay_qkv_words = ["self_attention.query_key_value.weight"]   
-            # qkv_words = "|".join(lay_qkv_words)          
-            
-            for layername in loaded_params:
-                weight = params_dict[layername]
-                matches = re.findall(combined_words, layername)
-                if matches:         
-                    # if self.use_gemm_pad and gemm_bank_conf(weight.data.shape[0]):
-                    #     weight.data = pad_weight(weight.data, 32)  
-                        
-                    # if self.use_fa_pad and (re.findall(qkv_words, layername)):
-                    #     if not gemm_bank_conf(weight.data.shape[0]):
-                    #         weight.data = pad_weight(weight.data, 32)
-                                 
-                    _weight = torch.zeros_like(weight.data)
-                    ori_shape =_weight.shape
-                    
-                    ops.trans_w16_gemm(_weight, weight.data, _weight.shape[0], _weight.shape[1])
-                    weight.data.copy_(_weight)
-                    
-                    weight.data=weight.data.reshape(ori_shape[1], -1)
         return loaded_params
 
 

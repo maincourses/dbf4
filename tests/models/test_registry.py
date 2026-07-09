@@ -3,7 +3,6 @@
 
 import warnings
 
-import os
 import pytest
 import torch.cuda
 
@@ -26,8 +25,6 @@ from vllm.platforms import current_platform
 
 from ..utils import create_new_process_for_each_test
 from .registry import HF_EXAMPLE_MODELS
-
-models_path_prefix = os.getenv('VLLM_OPTEST_MODELS_PATH') or os.getenv("OPTEST_MODELS_PATH")
 
 
 @pytest.mark.parametrize("model_arch", ModelRegistry.get_supported_archs())
@@ -59,21 +56,24 @@ def test_registry_imports(model_arch):
 
 @create_new_process_for_each_test()
 @pytest.mark.parametrize(
-    "model_arch,is_mm,init_cuda,is_ce",
+    "model_arch,is_mm,init_cuda,score_type",
     [
-        (os.path.join(models_path_prefix, "LlamaForCausalLM"), False, False, False),
-        (os.path.join(models_path_prefix, "LlavaForConditionalGeneration"), True, True, False),
-        (os.path.join(models_path_prefix, "BertForSequenceClassification"), False, False, True),
-        (os.path.join(models_path_prefix, "RobertaForSequenceClassification"), False, False, True),
-        (os.path.join(models_path_prefix, "XLMRobertaForSequenceClassification"), False, False, True),
+        ("LlamaForCausalLM", False, False, "bi-encoder"),
+        ("LlavaForConditionalGeneration", True, True, "bi-encoder"),
+        ("BertForSequenceClassification", False, False, "cross-encoder"),
+        ("RobertaForSequenceClassification", False, False, "cross-encoder"),
+        ("XLMRobertaForSequenceClassification", False, False, "cross-encoder"),
+        ("GteNewModel", False, False, "bi-encoder"),
+        ("GteNewForSequenceClassification", False, False, "cross-encoder"),
+        ("HF_ColBERT", False, False, "late-interaction"),
     ],
 )
-def test_registry_model_property(model_arch, is_mm, init_cuda, is_ce):
+def test_registry_model_property(model_arch, is_mm, init_cuda, score_type):
     model_info = ModelRegistry._try_inspect_model_cls(model_arch)
     assert model_info is not None
 
     assert model_info.supports_multimodal is is_mm
-    assert model_info.supports_cross_encoding is is_ce
+    assert model_info.score_type == score_type
 
     if init_cuda and current_platform.is_cuda_alike():
         assert not torch.cuda.is_initialized()
@@ -94,8 +94,8 @@ def test_registry_model_property(model_arch, is_mm, init_cuda, is_ce):
         # TODO(woosuk): Re-enable this once the MLP Speculator is supported
         # in V1.
         # ("MLPSpeculatorPreTrainedModel", False, False),
-        (os.path.join(models_path_prefix, "DeepseekV2ForCausalLM"), True, False),
-        (os.path.join(models_path_prefix, "Qwen2VLForConditionalGeneration"), True, True),
+        ("DeepseekV2ForCausalLM", True, False),
+        ("Qwen2VLForConditionalGeneration", True, True),
     ],
 )
 def test_registry_is_pp(model_arch, is_pp, init_cuda):

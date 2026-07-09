@@ -6,7 +6,6 @@ import time
 import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
 
-import os
 import pytest
 from transformers import AutoTokenizer
 
@@ -28,14 +27,13 @@ from vllm.v1.executor.abstract import Executor
 from vllm.v1.executor.uniproc_executor import UniProcExecutor
 from vllm.v1.kv_cache_interface import KVCacheConfig
 from vllm.v1.outputs import ModelRunnerOutput
-from ...utils import models_path_prefix
 
 from ...utils import create_new_process_for_each_test, multi_gpu_test
 
 if not current_platform.is_cuda():
     pytest.skip(reason="V1 currently only supported on CUDA.", allow_module_level=True)
 
-MODEL_NAME = os.path.join(models_path_prefix, "hmellor/tiny-random-LlamaForCausalLM")
+MODEL_NAME = "hmellor/tiny-random-LlamaForCausalLM"
 TOKENIZER = AutoTokenizer.from_pretrained(MODEL_NAME)
 # test_engine_core_concurrent_batches assumes exactly 12 tokens per prompt.
 # Adjust prompt if changing model to maintain 12-token length.
@@ -56,7 +54,6 @@ def make_request() -> EngineCoreRequest:
         mm_features=None,
         sampling_params=SamplingParams(),
         pooling_params=None,
-        eos_token_id=None,
         arrival_time=time.time(),
         lora_request=None,
         cache_salt=None,
@@ -509,7 +506,6 @@ def test_encoder_instance_zero_kv_cache(
     cache_config = CacheConfig(
         block_size=16,
         gpu_memory_utilization=gpu_memory_utilization,
-        swap_space=0,
         cache_dtype="auto",
         enable_prefix_caching=enable_prefix_caching,
     )

@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
-import os
 import math
 from collections.abc import Iterable
 
@@ -15,8 +14,6 @@ from vllm.model_executor.layers.vocab_parallel_embedding import (
     VocabParallelEmbedding,
 )
 from vllm.model_executor.model_loader.weight_utils import default_weight_loader
-from vllm import _custom_ops as ops
-from vllm import envs
 
 from .utils import maybe_prefix
 
@@ -75,7 +72,6 @@ class MLPSpeculator(nn.Module):
 
     def __init__(self, *, vllm_config: VllmConfig, prefix: str = "") -> None:
         super().__init__()
-        self.use_llama_nn = os.environ.get('LLAMA_NN') == '1'
         config = vllm_config.model_config.hf_config
         self.n_predict = config.n_predict
         self.vocab_size = config.vocab_size
@@ -236,15 +232,4 @@ class MLPSpeculator(nn.Module):
                 weight_loader = getattr(param, "weight_loader", default_weight_loader)
                 weight_loader(param, loaded_weight)
                 loaded_params.add(name)
-
-                if self.use_llama_nn or envs.VLLM_USE_NN:
-                    if (os.environ['LM_NN'] == '1' and "head" in name) or "proj" in name:
-                        _weight = torch.zeros_like(param.data)
-                        ori_shape =_weight.shape
-                        
-                        ops.trans_w16_gemm(_weight, param.data, _weight.shape[0], _weight.shape[1])
-                        param.data.copy_(_weight)
-                        
-                        param.data=param.data.reshape(ori_shape[1],-1)
-
         return loaded_params

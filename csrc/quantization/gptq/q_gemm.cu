@@ -1547,7 +1547,6 @@ void gemm_half_q_half_cuda(cublasHandle_t cublas_handle, const half* a,
   }
 }
 
-
 __global__ void shuffle_4bit_kernel(uint32_t* __restrict__ b_q_weight,
                                     const int size_k, const int size_n) {
   auto n = blockIdx.x * THREADS_X + threadIdx.x;
@@ -1852,7 +1851,6 @@ torch::Tensor gptq_gemm(torch::Tensor a, torch::Tensor b_q_weight,
       use_exllama, use_v2_format, bit);
   return c;
 }
-
 
 void gptq_shuffle(torch::Tensor q_weight, torch::Tensor q_perm, int64_t bit) {
   const at::cuda::OptionalCUDAGuard device_guard(device_of(q_weight));

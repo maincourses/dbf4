@@ -4,7 +4,6 @@
 
 import asyncio
 
-import os
 import pytest
 
 from tests.v1.shutdown.utils import SHUTDOWN_TEST_TIMEOUT_SEC
@@ -14,9 +13,8 @@ from vllm.inputs.data import TokensPrompt
 from vllm.sampling_params import RequestOutputKind
 from vllm.v1.engine.async_llm import AsyncLLM
 from vllm.v1.engine.exceptions import EngineGenerateError
-from ...utils import models_path_prefix
 
-MODELS = [os.path.join(models_path_prefix, "meta-llama/Llama-3.2-1B")]
+MODELS = ["meta-llama/Llama-3.2-1B"]
 
 
 @pytest.mark.asyncio

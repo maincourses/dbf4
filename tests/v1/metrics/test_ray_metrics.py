@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
-import os
 import pytest
 import ray
 
@@ -9,10 +8,9 @@ from vllm.config.model import ModelDType
 from vllm.sampling_params import SamplingParams
 from vllm.v1.engine.async_llm import AsyncEngineArgs, AsyncLLM
 from vllm.v1.metrics.ray_wrappers import RayPrometheusMetric, RayPrometheusStatLogger
-from ...utils import models_path_prefix
 
 MODELS = [
-    os.path.join(models_path_prefix, "distilbert/distilgpt2"),
+    "distilbert/distilgpt2",
 ]
 
 

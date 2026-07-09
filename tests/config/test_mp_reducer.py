@@ -1,13 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
-import os
 import sys
 from unittest.mock import patch
 
 from vllm.config import VllmConfig
 from vllm.engine.arg_utils import AsyncEngineArgs
 from vllm.v1.engine.async_llm import AsyncLLM
-from ..utils import models_path_prefix
 
 
 def test_mp_reducer():
@@ -23,7 +21,7 @@ def test_mp_reducer():
 
     with patch("multiprocessing.reducer.register") as mock_register:
         engine_args = AsyncEngineArgs(
-            model=os.path.join(models_path_prefix, "facebook/opt-125m"),
+            model="facebook/opt-125m",
             max_model_len=32,
             gpu_memory_utilization=0.1,
             disable_log_stats=True,

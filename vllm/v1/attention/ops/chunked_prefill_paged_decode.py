@@ -302,8 +302,9 @@ def chunked_prefill_paged_decode(
     block_size = value_cache.shape[3]
     num_seqs = len(seq_lens)
     num_query_heads = query.shape[1]
-    num_kv_heads = key.shape[1]
-    num_queries_per_kv = query.shape[1] // key.shape[1]
+    # key may be None in cross-attention decode (already cached from encoder)
+    num_kv_heads = key.shape[1] if key is not None else key_cache.shape[1]
+    num_queries_per_kv = num_query_heads // num_kv_heads
     head_size = query.shape[2]
 
     # Conversion of FP8 Tensor from uint8 storage to
@@ -329,19 +330,17 @@ def chunked_prefill_paged_decode(
 
     from vllm.platforms.rocm import use_rocm_custom_paged_attention
 
-
-    use_custom = False
-    # use_custom = use_rocm_custom_paged_attention(
-    #     query.dtype,
-    #     head_size,
-    #     block_size,
-    #     num_queries_per_kv,
-    #     max_seq_len,
-    #     sliding_window,
-    #     kv_cache_dtype,
-    #     alibi_slopes,
-    #     sinks,
-    # )
+    use_custom = use_rocm_custom_paged_attention(
+        query.dtype,
+        head_size,
+        block_size,
+        num_queries_per_kv,
+        max_seq_len,
+        sliding_window,
+        kv_cache_dtype,
+        alibi_slopes,
+        sinks,
+    )
     # Triton is only forced when encountering a non-standard block
     # like Qwen3 with a size of 544.
     # 1. Check if block_size is a power of 2 (16, 32, 64...)

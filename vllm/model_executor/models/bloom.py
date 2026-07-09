@@ -26,10 +26,7 @@ from itertools import islice
 import torch
 from torch import nn
 from transformers import BloomConfig
-import os
-import re
 
-from vllm.attention.layer import Attention
 from vllm.compilation.decorators import support_torch_compile
 from vllm.config import CacheConfig, VllmConfig
 from vllm.distributed import (
@@ -38,6 +35,7 @@ from vllm.distributed import (
     get_tensor_model_parallel_world_size,
 )
 from vllm.model_executor.layers.activation import get_act_fn
+from vllm.model_executor.layers.attention import Attention
 from vllm.model_executor.layers.linear import (
     ColumnParallelLinear,
     QKVParallelLinear,
@@ -51,8 +49,6 @@ from vllm.model_executor.layers.vocab_parallel_embedding import (
 )
 from vllm.model_executor.model_loader.weight_utils import default_weight_loader
 from vllm.sequence import IntermediateTensors
-from vllm import _custom_ops as ops
-from vllm.model_executor.utils import pad_weight, gemm_bank_conf
 
 from .interfaces import SupportsPP, SupportsQuant
 from .utils import (
@@ -139,10 +135,6 @@ class BloomAttention(nn.Module):
             quant_config=quant_config,
             prefix=f"{prefix}.attn",
         )
-        self.quant_method = None
-        if quant_config is not None:
-            self.quant_method=quant_config.get_name()
-            self.quant_config=quant_config
 
     def forward(
         self,
@@ -151,8 +143,6 @@ class BloomAttention(nn.Module):
     ) -> torch.Tensor:
         del position_ids  # Unused.
         qkv, _ = self.query_key_value(hidden_states)
-        # if os.environ.get('FA_PAD') == '1' and self.quant_method is None:
-        #     qkv = qkv[...,:-32]
         q, k, v = qkv.chunk(chunks=3, dim=-1)
         attn_output = self.attn(q, k, v)
         output, _ = self.dense(attn_output)
@@ -280,21 +270,13 @@ class BloomModel(nn.Module):
         self.make_empty_intermediate_tensors = make_empty_intermediate_tensors_factory(
             ["hidden_states"], config.hidden_size
         )
-        self.quant_method = None
-        if quant_config is not None:
-            self.quant_method=quant_config.get_name()
-            self.quant_config=quant_config
-              
-        self.use_llama_nn = os.environ.get('LLAMA_NN') == '1'
-        self.use_gemm_pad = os.environ.get('GEMM_PAD') == '1'
-        self.use_fa_pad = os.environ.get('FA_PAD') == '1'
 
     def embed_input_ids(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self.word_embeddings(input_ids)
 
     def forward(
         self,
-        input_ids: torch.Tensor,
+        input_ids: torch.Tensor | None,
         position_ids: torch.Tensor,
         intermediate_tensors: IntermediateTensors | None,
         inputs_embeds: torch.Tensor | None = None,
@@ -344,42 +326,6 @@ class BloomModel(nn.Module):
             weight_loader(param, loaded_weight)
             loaded_params.add(name)
 
-        if self.use_llama_nn and self.quant_method is None:
-            lay_key_words = [
-                "self_attention.query_key_value.weight",
-                "self_attention.dense.weight",
-                "mlp.dense_h_to_4h.weight",
-                "mlp.dense_4h_to_h.weight"
-            ]
-            combined_words = "|".join(lay_key_words)
-            
-            # lay_qkv_words = ["self_attention.query_key_value.weight"]   
-            # qkv_words = "|".join(lay_qkv_words)  
-            
-            # lay_qkv_bias_words = ["self_attention.query_key_value.bias"]   
-            # qkv_bias_words = "|".join(lay_qkv_bias_words) 
-            
-            for layername in loaded_params:
-                weight = params_dict[layername]
-                # if self.use_fa_pad and (re.findall(qkv_bias_words, layername)):
-                #     weight.data = pad_weight(weight.data, 32)
-                    
-                matches = re.findall(combined_words, layername)
-                if matches:   
-                    # if self.use_gemm_pad and gemm_bank_conf(weight.data.shape[0]):
-                    #     weight.data = pad_weight(weight.data, 32)  
-                    
-                    # if self.use_fa_pad and (re.findall(qkv_words, layername)):
-                    #     if not gemm_bank_conf(weight.data.shape[0]):
-                    #         weight.data = pad_weight(weight.data, 32)
-                        
-                    _weight = torch.zeros_like(weight.data)
-                    ori_shape =_weight.shape
-                    
-                    ops.trans_w16_gemm(_weight, weight.data, _weight.shape[0], _weight.shape[1])
-                    weight.data.copy_(_weight)
-                    
-                    weight.data=weight.data.reshape(ori_shape[1],-1)
         return loaded_params
 
 
@@ -412,7 +358,7 @@ class BloomForCausalLM(nn.Module, SupportsPP, SupportsQuant):
 
     def forward(
         self,
-        input_ids: torch.Tensor,
+        input_ids: torch.Tensor | None,
         positions: torch.Tensor,
         intermediate_tensors: IntermediateTensors | None = None,
         inputs_embeds: torch.Tensor | None = None,

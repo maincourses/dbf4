@@ -30,15 +30,13 @@ from itertools import islice
 import torch
 from torch import nn
 from transformers import LlamaConfig
-import os
-import re
 
-from vllm.attention.layer import Attention
 from vllm.compilation.decorators import support_torch_compile
 from vllm.config import CacheConfig, VllmConfig
 from vllm.distributed import get_pp_group, get_tensor_model_parallel_world_size
 from vllm.model_executor.layers.activation import SiluAndMul
-from vllm.model_executor.layers.attention.encoder_only_attention import (
+from vllm.model_executor.layers.attention import (
+    Attention,
     EncoderOnlyAttention,
 )
 from vllm.model_executor.layers.layernorm import RMSNorm
@@ -63,6 +61,7 @@ from vllm.v1.attention.backend import AttentionType
 
 from .adapters import as_embedding_model, as_seq_cls_model
 from .interfaces import (
+    EagleModelMixin,
     SupportsEagle,
     SupportsEagle3,
     SupportsLoRA,
@@ -77,9 +76,6 @@ from .utils import (
     make_layers,
     maybe_prefix,
 )
-
-from vllm import _custom_ops as ops
-from vllm.model_executor.utils import pad_weight, gemm_bank_conf
 
 
 class LlamaMLP(nn.Module):
@@ -223,11 +219,6 @@ class LlamaAttention(nn.Module):
             attn_type=attn_type,
             prefix=f"{prefix}.attn",
         )
-        
-        self.quant_method = None
-        if quant_config is not None:
-            self.quant_method=quant_config.get_name()
-            self.quant_config=quant_config
 
     def forward(
         self,
@@ -235,8 +226,6 @@ class LlamaAttention(nn.Module):
         hidden_states: torch.Tensor,
     ) -> torch.Tensor:
         qkv, _ = self.qkv_proj(hidden_states)
-        # if os.environ.get('FA_PAD') == '1' and self.quant_method is None:
-        #     qkv = qkv[...,:-32]
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
         q, k = self.rotary_emb(positions, q, k)
         attn_output = self.attn(q, k, v)
@@ -363,7 +352,7 @@ def llama_model_invariants(
     # mark_unbacked_dims={"input_ids": 0},
     shape_invariants=llama_model_invariants
 )
-class LlamaModel(nn.Module):
+class LlamaModel(nn.Module, EagleModelMixin):
     def __init__(
         self,
         *,
@@ -401,21 +390,9 @@ class LlamaModel(nn.Module):
         else:
             self.norm = PPMissingLayer()
 
-        self.aux_hidden_state_layers = tuple[int, ...]()
-
         self.make_empty_intermediate_tensors = make_empty_intermediate_tensors_factory(
             ["hidden_states", "residual"], config.hidden_size
         )
-        self.quant_method = None
-        if quant_config is not None:
-            self.quant_method=quant_config.get_name()
-            self.quant_config=quant_config
-
-        self.use_llama_nn = os.environ.get('LLAMA_NN') == '1'
-        # self.use_lm_nn = os.environ.get('LM_NN') == '1'
-        self.use_gemm_pad = os.environ.get('GEMM_PAD') == '1'
-        self.use_fa_pad = os.environ.get('FA_PAD') == '1'
-        self.use_awq_pad = os.environ.get('AWQ_PAD') == '1'
 
     def embed_input_ids(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self.embed_tokens(input_ids)
@@ -439,14 +416,15 @@ class LlamaModel(nn.Module):
             hidden_states = intermediate_tensors["hidden_states"]
             residual = intermediate_tensors["residual"]
 
-        aux_hidden_states = []
+        aux_hidden_states = self._maybe_add_hidden_state([], 0, hidden_states, residual)
         for idx, layer in enumerate(
             islice(self.layers, self.start_layer, self.end_layer)
         ):
-            if idx in self.aux_hidden_state_layers:
-                aux_hidden_states.append(hidden_states + residual)
             hidden_states, residual = layer(
                 positions, hidden_states, residual, **extra_layer_kwargs
+            )
+            self._maybe_add_hidden_state(
+                aux_hidden_states, idx + 1, hidden_states, residual
             )
 
         if not get_pp_group().is_last_rank:
@@ -472,9 +450,6 @@ class LlamaModel(nn.Module):
         params_dict = dict(self.named_parameters())
         loaded_params: set[str] = set()
         for name, loaded_weight in weights:
-            if self.use_llama_nn:
-                current_count = loaded_weight.current_count 
-                total_count = loaded_weight.total_count
             if "rotary_emb.inv_freq" in name:
                 continue
             if "rotary_emb.cos_cached" in name or "rotary_emb.sin_cached" in name:
@@ -525,51 +500,6 @@ class LlamaModel(nn.Module):
                 weight_loader = getattr(param, "weight_loader", default_weight_loader)
                 weight_loader(param, loaded_weight)
             loaded_params.add(name)
-            
-        if self.use_llama_nn and self.quant_method is None and current_count==total_count:
-            lay_key_words = [
-                "self_attn.qkv_proj.weight",
-                "self_attn.o_proj.weight",
-                "mlp.gate_up_proj.weight",
-                "mlp.down_proj.weight",
-            ]
-            combined_words = "|".join(lay_key_words)
-            
-            # lay_qkv_words = ["self_attn.qkv_proj.weight"]   
-            # qkv_words = "|".join(lay_qkv_words)          
-            
-            # for layername, weight in params_dict.items():
-            # for layername in loaded_params:
-            for layername in params_dict.keys():
-                weight = params_dict[layername]
-                if "lm_head.weight" in layername and weight.shape[1] >= 4096:
-                    lay_key_words.append("lm_head.weight")
-                    combined_words = "|".join(lay_key_words)
-                    os.environ['LM_NN'] = '1'  
-                else:
-                    os.environ['LM_NN'] = '0' 
-                    
-                matches = re.findall(combined_words, layername)
-                
-                if matches:         
-                    # if self.use_gemm_pad and gemm_bank_conf(weight.data.shape[0]):
-                    #     weight.data = pad_weight(weight.data, 32)  
-                        
-                    # if self.use_fa_pad and (re.findall(qkv_words, layername)):
-                    #     if not gemm_bank_conf(weight.data.shape[0]):
-                    #         weight.data = pad_weight(weight.data, 32)
-                                 
-                    _weight = torch.zeros_like(weight.data)
-                    ori_shape =_weight.shape
-                    
-                    ops.trans_w16_gemm(_weight, weight.data, _weight.shape[0], _weight.shape[1])
-                    weight.data.copy_(_weight)
-                    
-                    weight.data=weight.data.reshape(ori_shape[1], -1)
-        else:
-            os.environ['LM_NN'] = '0'
-            os.environ['LLAMA_NN'] = '0'
-             
         return loaded_params
 
 
@@ -626,18 +556,6 @@ class LlamaForCausalLM(
             self.model.make_empty_intermediate_tensors
         )
 
-    def set_aux_hidden_state_layers(self, layers: tuple[int, ...]) -> None:
-        self.model.aux_hidden_state_layers = layers
-
-    def get_eagle3_aux_hidden_state_layers(self) -> tuple[int, ...]:
-        """Override to return default layers for Llama
-
-        Note: The GPU model runner will override this with layers from
-        the speculative config if available, providing dynamic configuration.
-        """
-        num_layers = len(self.model.layers)
-        return (2, num_layers // 2, num_layers - 3)
-
     def _init_model(
         self,
         vllm_config: VllmConfig,
@@ -651,7 +569,7 @@ class LlamaForCausalLM(
 
     def forward(
         self,
-        input_ids: torch.Tensor,
+        input_ids: torch.Tensor | None,
         positions: torch.Tensor,
         intermediate_tensors: IntermediateTensors | None = None,
         inputs_embeds: torch.Tensor | None = None,

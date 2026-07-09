@@ -3,12 +3,10 @@
 
 import glob
 import tempfile
-import os
 
 import huggingface_hub.constants
 import pytest
 import torch
-from ..utils import models_path_prefix
 
 from vllm.model_executor.model_loader.weight_utils import (
     download_weights_from_hf,
@@ -26,7 +24,7 @@ def test_fastsafetensors_model_loader():
     with tempfile.TemporaryDirectory() as tmpdir:
         huggingface_hub.constants.HF_HUB_OFFLINE = False
         download_weights_from_hf(
-            os.path.join(models_path_prefix, "openai-community/gpt2"), allow_patterns=["*.safetensors"], cache_dir=tmpdir
+            "openai-community/gpt2", allow_patterns=["*.safetensors"], cache_dir=tmpdir
         )
         safetensors = glob.glob(f"{tmpdir}/**/*.safetensors", recursive=True)
         assert len(safetensors) > 0

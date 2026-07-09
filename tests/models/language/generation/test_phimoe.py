@@ -2,16 +2,14 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 import pytest
 import torch
-import os
 
 from vllm.platforms import current_platform
 
 from ....utils import large_gpu_test
 from ...utils import check_logprobs_close
-from ....utils import models_path_prefix
 
 MODELS = [
-    os.path.join(models_path_prefix, "microsoft/Phi-3.5-MoE-instruct"),
+    "microsoft/Phi-3.5-MoE-instruct",
 ]
 
 

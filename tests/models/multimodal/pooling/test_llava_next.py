@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
-import os
 import pytest
 import torch.nn.functional as F
 from transformers import AutoModelForImageTextToText
@@ -9,7 +8,7 @@ from transformers import AutoModelForImageTextToText
 from vllm.platforms import current_platform
 
 from ....conftest import IMAGE_ASSETS, HfRunner, PromptImageInput, VllmRunner
-from ....utils import large_gpu_test, models_path_prefix
+from ....utils import large_gpu_test
 from ...utils import check_embeddings_close
 
 # Llava Next embedding implementation is only supported by CUDA.
@@ -52,7 +51,7 @@ HF_IMAGE_PROMPTS = IMAGE_ASSETS.prompts(
     }
 )
 
-MODELS = [os.path.join(models_path_prefix, "royokong/e5-v")]
+MODELS = ["royokong/e5-v"]
 
 
 def _run_test(
@@ -82,7 +81,7 @@ def _run_test(
         # Patch the issue where image_token_id
         # exceeds the maximum allowed vocab size
         hf_model.model.resize_token_embeddings(
-            hf_model.model.language_model.vocab_size + 1
+            hf_model.model.model.language_model.vocab_size + 1
         )
 
         all_inputs = hf_model.get_inputs(input_texts, images=input_images)

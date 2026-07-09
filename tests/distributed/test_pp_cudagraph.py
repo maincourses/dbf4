@@ -1,16 +1,15 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
-import os
 import pytest
 from typing_extensions import LiteralString
 
-from ..utils import compare_two_settings, create_new_process_for_each_test, models_path_prefix
+from ..utils import compare_two_settings, create_new_process_for_each_test
 
 
 @pytest.mark.parametrize(
     "PP_SIZE, MODEL_NAME",
     [
-        (2, os.path.join(models_path_prefix, "JackFram/llama-160m")),
+        (2, "JackFram/llama-160m"),
     ],
 )
 @pytest.mark.parametrize(

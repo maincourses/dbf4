@@ -34,8 +34,6 @@ typedef __hip_bfloat16 __nv_bfloat16;
   #include "../quantization/w8a8/fp8/nvidia/quant_utils.cuh"
 #endif
 
-#include "../quantization/int8_kvcache/quant_utils.cuh"
-
 #define MAX(a, b) ((a) > (b) ? (a) : (b))
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
 #define DIVIDE_ROUND_UP(a, b) (((a) + (b) - 1) / (b))
@@ -277,13 +275,7 @@ __device__ void paged_attention_kernel(
         if constexpr (KV_DTYPE == Fp8KVCacheDataType::kAuto) {
           k_vecs[j] = *reinterpret_cast<const K_vec*>(
               k_ptr + offset1 * BLOCK_SIZE * x + offset2);
-        } else if constexpr (KV_DTYPE == Fp8KVCacheDataType::kInt8) {
-              Quant_vec k_vec_quant = *reinterpret_cast<const Quant_vec*>(
-                  k_ptr + offset1 * BLOCK_SIZE * x + offset2);
-              k_vecs[j] = int8::scaled_vec_conversion_int8<K_vec, Quant_vec>(
-                  k_vec_quant, 
-                  *k_scale);
-        } else { 
+        } else {
           // Vector conversion from Quant_vec to K_vec.
           Quant_vec k_vec_quant = *reinterpret_cast<const Quant_vec*>(
               k_ptr + offset1 * BLOCK_SIZE * x + offset2);
@@ -413,12 +405,6 @@ __device__ void paged_attention_kernel(
 
         if constexpr (KV_DTYPE == Fp8KVCacheDataType::kAuto) {
           v_vec = *reinterpret_cast<const V_vec*>(v_ptr + offset);
-        } else if constexpr (KV_DTYPE == Fp8KVCacheDataType::kInt8) {
-          V_quant_vec v_quant_vec =
-              *reinterpret_cast<const V_quant_vec*>(v_ptr + offset);
-          // Vector conversion from V_quant_vec to V_vec.
-          v_vec = int8::scaled_vec_conversion_int8<V_vec, V_quant_vec>(v_quant_vec,
-                                                                       *v_scale);
         } else {
           V_quant_vec v_quant_vec =
               *reinterpret_cast<const V_quant_vec*>(v_ptr + offset);

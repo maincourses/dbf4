@@ -3,13 +3,11 @@
 
 from typing import Any
 
-import os
 import pytest
 
-from vllm import LLM, SamplingParams, envs
-from ..utils import models_path_prefix
+from vllm import LLM, SamplingParams
 
-MODEL = os.path.join(models_path_prefix, "meta-llama/llama-2-7b-hf")
+MODEL = "meta-llama/llama-2-7b-hf"
 MAX_TOKENS = 200
 
 

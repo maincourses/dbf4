@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
-import os
 from collections.abc import Iterable
 
 import torch
@@ -15,8 +14,6 @@ from vllm.model_executor.layers.vocab_parallel_embedding import (
 from vllm.model_executor.model_loader.weight_utils import default_weight_loader
 
 from .utils import maybe_prefix
-
-from vllm import _custom_ops as ops
 
 
 class ResidualBlock(nn.Module):
@@ -59,8 +56,6 @@ class Medusa(nn.Module):
     def __init__(self, *, vllm_config: VllmConfig, prefix: str = "") -> None:
         config = vllm_config.speculative_config.draft_model_config.hf_config
         super().__init__()
-
-        self.use_llama_nn = os.environ.get('LLAMA_NN') == '1'
         self.config = config
         self.blocks = nn.ModuleList(
             [
@@ -173,15 +168,6 @@ class Medusa(nn.Module):
             weight_loader = getattr(param, "weight_loader", default_weight_loader)
             weight_loader(param, loaded_weight)
             loaded_params.add(name)
-
-            if self.use_llama_nn and os.environ['LM_NN'] == '1' and "lm_head" in name:
-                _weight = torch.zeros_like(param.data)
-                ori_shape =_weight.shape
-                
-                ops.trans_w16_gemm(_weight, param.data, _weight.shape[0], _weight.shape[1])
-                param.data.copy_(_weight)
-                
-                param.data=param.data.reshape(ori_shape[1],-1)
 
         if self.token_map is not None:
             self.token_map.to(device=self.lm_heads[0].weight.device)

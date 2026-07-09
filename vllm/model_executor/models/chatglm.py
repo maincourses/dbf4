@@ -11,14 +11,12 @@ from itertools import islice
 import torch
 from torch import nn
 from torch.nn import LayerNorm
-import os
-import re
 
-from vllm.attention.layer import Attention
 from vllm.compilation.decorators import support_torch_compile
 from vllm.config import CacheConfig, VllmConfig
 from vllm.distributed import get_pp_group, get_tensor_model_parallel_world_size
 from vllm.model_executor.layers.activation import SiluAndMul
+from vllm.model_executor.layers.attention import Attention
 from vllm.model_executor.layers.layernorm import RMSNorm
 from vllm.model_executor.layers.linear import (
     MergedColumnParallelLinear,
@@ -45,9 +43,6 @@ from .utils import (
     make_layers,
     maybe_prefix,
 )
-
-from vllm import _custom_ops as ops
-from vllm.model_executor.utils import pad_weight, gemm_bank_conf
 
 
 class GLMAttention(nn.Module):
@@ -127,10 +122,6 @@ class GLMAttention(nn.Module):
             quant_config=quant_config,
             prefix=f"{prefix}.attn",
         )
-        self.quant_method = None
-        if quant_config is not None:
-            self.quant_method=quant_config.get_name()
-            self.quant_config=quant_config
 
     def forward(
         self,
@@ -138,8 +129,6 @@ class GLMAttention(nn.Module):
         position_ids: torch.Tensor,
     ) -> torch.Tensor:
         qkv, _ = self.query_key_value(hidden_states)
-        # if os.environ.get('FA_PAD') == '1' and self.quant_method is None:
-        #     qkv = qkv[...,:-32]
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
         q, k = self.rotary_emb(position_ids, q, k)
         context_layer = self.attn(q, k, v)
@@ -367,21 +356,13 @@ class ChatGLMModel(nn.Module, SupportsQuant):
         self.make_empty_intermediate_tensors = (
             self.encoder.make_empty_intermediate_tensors
         )
-        self.quant_method = None
-        if quant_config is not None:
-            self.quant_method=quant_config.get_name()
-            self.quant_config=quant_config
-
-        self.use_llama_nn = os.environ.get('LLAMA_NN') == '1'
-        self.use_gemm_pad = os.environ.get('GEMM_PAD') == '1'
-        self.use_fa_pad = os.environ.get('FA_PAD') == '1'
 
     def embed_input_ids(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self.embedding(input_ids)
 
     def forward(
         self,
-        input_ids: torch.Tensor,
+        input_ids: torch.Tensor | None,
         positions: torch.Tensor,
         intermediate_tensors: IntermediateTensors | None = None,
         inputs_embeds: torch.Tensor | None = None,
@@ -438,50 +419,6 @@ class ChatGLMModel(nn.Module, SupportsQuant):
                 weight_loader = getattr(param, "weight_loader", default_weight_loader)
                 weight_loader(param, loaded_weight)
             loaded_params.add(name)
-            
-        if self.use_llama_nn and self.quant_method is None:
-            lay_key_words = [
-                "self_attention.query_key_value.weight",
-                "self_attention.dense.weight",
-                "mlp.dense_h_to_4h.weight",
-                "mlp.dense_4h_to_h.weight",
-            ]
-            combined_words = "|".join(lay_key_words)
-            
-            # lay_qkv_words = ["self_attention.query_key_value.weight"]   
-            # qkv_words = "|".join(lay_qkv_words)  
-            
-            # lay_qkv_bias_words = ["self_attention.query_key_value.bias"]   
-            # qkv_bias_words = "|".join(lay_qkv_bias_words)
-            
-            for layername in loaded_params:
-                weight = params_dict[layername]
-                if "lm_head.weight" in layername and weight.shape[1] == 4096:
-                    lay_key_words.append("lm_head.weight")
-                    combined_words = "|".join(lay_key_words)
-                    os.environ['LM_NN'] = '1'  
-                else:
-                    os.environ['LM_NN'] = '0'
-                # if self.use_fa_pad and (re.findall(qkv_bias_words, layername)):
-                #     weight.data = pad_weight(weight.data, 32)
-                    
-                matches = re.findall(combined_words, layername)
-                if matches:  
-                    # if self.use_gemm_pad and gemm_bank_conf(weight.data.shape[0]):
-                    #     weight.data = pad_weight(weight.data, 32)  
-                        
-                    # if self.use_fa_pad and (re.findall(qkv_words, layername)):
-                    #     if not gemm_bank_conf(weight.data.shape[0]):
-                    #         weight.data = pad_weight(weight.data, 32)
-                                        
-                    _weight = torch.zeros_like(weight.data)
-                    ori_shape =_weight.shape
-                    
-                    ops.trans_w16_gemm(_weight, weight.data, _weight.shape[0], _weight.shape[1])
-                    weight.data.copy_(_weight)
-                    
-                    weight.data=weight.data.reshape(ori_shape[1], -1)
-                    
         return loaded_params
 
 
@@ -554,7 +491,7 @@ class ChatGLMForCausalLM(ChatGLMBaseModel, SupportsLoRA, SupportsPP, SupportsQua
 
     def forward(
         self,
-        input_ids: torch.Tensor,
+        input_ids: torch.Tensor | None,
         positions: torch.Tensor,
         intermediate_tensors: IntermediateTensors | None = None,
         inputs_embeds: torch.Tensor | None = None,

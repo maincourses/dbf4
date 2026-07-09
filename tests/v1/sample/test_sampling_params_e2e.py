@@ -1,13 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
-import os
 import pytest
 
 from vllm import LLM, SamplingParams
-from ...utils import models_path_prefix
 
-MODEL = os.path.join(models_path_prefix, "hmellor/tiny-random-LlamaForCausalLM")
+MODEL = "hmellor/tiny-random-LlamaForCausalLM"
 PROMPT = "Hello my name is Robert and I"
 
 
@@ -144,20 +142,6 @@ def test_bad_words(llm):
     new_tokens = output[0].outputs[0].token_ids
     assert not contains_bad_word(new_text, new_tokens, bad_words_1)
     assert not contains_bad_word(new_text, new_tokens, bad_words_2)
-
-
-def test_logits_processor(llm):
-    """Check that we reject logits processor."""
-
-    # This sample logits processor gives infinite score to the i-th token,
-    # where i is the length of the input sequence.
-    # We therefore expect the output token sequence to be [0, 1, 2, ...]
-    def pick_ith(token_ids, logits):
-        logits[len(token_ids)] = float("inf")
-        return logits
-
-    with pytest.raises(ValueError):
-        _ = llm.generate(PROMPT, SamplingParams(logits_processors=[pick_ith]))
 
 
 def test_allowed_token_ids(llm):

@@ -1,11 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
-
-import os
 import pytest
 import torch
 from transformers import AutoModelForSequenceClassification
-from ....utils import models_path_prefix
 
 from vllm.platforms import current_platform
 
@@ -14,13 +11,14 @@ from vllm.platforms import current_platform
     "model",
     [
         pytest.param(
-            os.path.join(models_path_prefix, "jason9693/Qwen2.5-1.5B-apeach"),
+            "jason9693/Qwen2.5-1.5B-apeach",
             marks=[
                 pytest.mark.core_model,
                 pytest.mark.cpu_model,
                 pytest.mark.slow_test,
             ],
         ),
+        pytest.param("Forrest20231206/ernie-3.0-base-zh-cls"),
     ],
 )
 @pytest.mark.parametrize("dtype", ["half"] if current_platform.is_rocm() else ["float"])
@@ -48,5 +46,8 @@ def test_models(
         # half datatype tests in
         # tests/models/language/pooling/test_embedding.py
         assert torch.allclose(
-            hf_output, vllm_output, 1e-3 if dtype == "float" else 1e-2
+            hf_output,
+            vllm_output,
+            atol=1e-3 if dtype == "float" else 1e-2,
+            rtol=2e-3 if dtype == "float" else 1e-2,
         )

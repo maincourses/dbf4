@@ -22,17 +22,15 @@
 from collections.abc import Iterable
 from itertools import islice
 
-import os
-import re
 import torch
 from torch import nn
 from transformers import GPTNeoXConfig
 
-from vllm.attention.layer import Attention
 from vllm.compilation.decorators import support_torch_compile
 from vllm.config import CacheConfig, VllmConfig
 from vllm.distributed import get_pp_group, get_tensor_model_parallel_world_size
 from vllm.model_executor.layers.activation import get_act_fn
+from vllm.model_executor.layers.attention import Attention
 from vllm.model_executor.layers.linear import (
     ColumnParallelLinear,
     QKVParallelLinear,
@@ -56,7 +54,6 @@ from .utils import (
     make_layers,
     maybe_prefix,
 )
-from vllm import _custom_ops as ops
 
 
 class GPTNeoXAttention(nn.Module):
@@ -227,17 +224,13 @@ class GPTNeoXModel(nn.Module):
         self.make_empty_intermediate_tensors = make_empty_intermediate_tensors_factory(
             ["hidden_states"], config.hidden_size
         )
-        self.quant_method = None
-        if quant_config is not None:
-            self.quant_method=quant_config.get_name()
-            self.quant_config=quant_config
 
     def embed_input_ids(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self.embed_in(input_ids)
 
     def forward(
         self,
-        input_ids: torch.Tensor,
+        input_ids: torch.Tensor | None,
         position_ids: torch.Tensor,
         intermediate_tensors: IntermediateTensors | None,
         inputs_embeds: torch.Tensor | None = None,
@@ -325,7 +318,7 @@ class GPTNeoXForCausalLM(nn.Module, SupportsPP):
 
     def forward(
         self,
-        input_ids: torch.Tensor,
+        input_ids: torch.Tensor | None,
         positions: torch.Tensor,
         intermediate_tensors: IntermediateTensors | None = None,
         inputs_embeds: torch.Tensor | None = None,

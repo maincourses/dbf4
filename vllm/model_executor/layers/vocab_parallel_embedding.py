@@ -4,8 +4,6 @@
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from vllm import envs
-import os
 import torch
 import torch.nn.functional as F
 from torch.nn.parameter import Parameter, UninitializedParameter
@@ -32,9 +30,6 @@ DEFAULT_VOCAB_PADDING_SIZE = 64
 
 class UnquantizedEmbeddingMethod(QuantizeMethodBase):
     """Unquantized method for embeddings."""
-    
-    def __init__(self):
-        self.use_llama_nn = os.environ.get('LLAMA_NN') == '1'
 
     def create_weights(
         self,
@@ -47,16 +42,6 @@ class UnquantizedEmbeddingMethod(QuantizeMethodBase):
         **extra_weight_attrs,
     ):
         """Create weights for embedding layer."""
-        # if envs.VLLM_USE_NN:
-        #     weight = Parameter(
-        #         torch.empty(
-        #             input_size_per_partition,
-        #             sum(output_partition_sizes),
-        #             dtype=params_dtype,
-        #         ),
-        #         requires_grad=False,
-        #     )
-        # else:
         weight = Parameter(
             torch.empty(
                 sum(output_partition_sizes),
@@ -81,19 +66,7 @@ class UnquantizedEmbeddingMethod(QuantizeMethodBase):
         x: torch.Tensor,
         bias: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        if self.use_llama_nn and os.environ['LM_NN'] == '1':
-            if bias is not None:
-                if len(x.shape) == 2: 
-                    return torch.addmm(bias, x, layer.weight)
-                else:
-                    return torch.matmul(x, layer.weight) + bias
-            else:
-                return torch.matmul(x, layer.weight)
-        else:
-            # if envs.VLLM_USE_NN and x.shape[-1] == layer.weight.shape[0]:
-            #     return dispatch_unquantized_gemm()(layer, x, layer.weight.t(), bias)
-            # else:
-            return dispatch_unquantized_gemm()(layer, x, layer.weight, bias)
+        return dispatch_unquantized_gemm()(layer, x, layer.weight, bias)
 
     def embedding(self, layer: torch.nn.Module, input_: torch.Tensor) -> torch.Tensor:
         return F.embedding(input_, layer.weight)
@@ -485,10 +458,6 @@ class VocabParallelEmbedding(CustomOp):
 
         # Copy the data. Select chunk corresponding to current shard.
         loaded_weight = loaded_weight.narrow(output_dim, start_idx, shard_size)
-
-        # if envs.VLLM_USE_NN and self.quant_method is not None:
-        #     loaded_weight = loaded_weight.t()
-            
         param[: loaded_weight.shape[0]].data.copy_(loaded_weight)
         param[loaded_weight.shape[0] :].data.fill_(0)
 

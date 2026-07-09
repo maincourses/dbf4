@@ -2,15 +2,13 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
 import weakref
-import os
 
 import pytest
 
 from vllm import LLM, SamplingParams
 from vllm.distributed import cleanup_dist_env_and_memory
-from ...utils import models_path_prefix
 
-MODEL_NAME = os.path.join(models_path_prefix, "distilbert/distilgpt2")
+MODEL_NAME = "distilbert/distilgpt2"
 
 PROMPTS = [
     "Hello, my name is",

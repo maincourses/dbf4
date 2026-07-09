@@ -3,13 +3,12 @@
 
 import openai  # use the official client for correctness check
 import pytest
-import os
 import pytest_asyncio
 
-from ...utils import RemoteOpenAIServer, models_path_prefix
+from ...utils import RemoteOpenAIServer
 
 # any model with a chat template should work here
-MODEL_NAME = os.path.join(models_path_prefix, "Qwen/Qwen3-0.6B")
+MODEL_NAME = "Qwen/Qwen3-0.6B"
 # technically this needs Mistral-7B-v0.1 as base, but we're not testing
 # generation quality here
 

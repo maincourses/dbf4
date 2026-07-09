@@ -7,7 +7,6 @@ from dataclasses import MISSING, Field, asdict, dataclass, field
 from unittest.mock import patch
 
 import pytest
-import os
 from pydantic import ValidationError
 
 from vllm.compilation.backends import VllmBackend
@@ -29,7 +28,6 @@ from vllm.config.vllm import (
     OptimizationLevel,
 )
 from vllm.platforms import current_platform
-from utils import models_path_prefix
 
 
 def test_compile_config_repr_succeeds():
@@ -44,6 +42,22 @@ def test_compile_config_repr_succeeds():
     assert "inductor_passes" in val
 
 
+def test_async_scheduling_with_pipeline_parallelism_is_allowed():
+    cfg = VllmConfig(
+        scheduler_config=SchedulerConfig(
+            max_model_len=8192,
+            is_encoder_decoder=False,
+            async_scheduling=True,
+        ),
+        parallel_config=ParallelConfig(
+            pipeline_parallel_size=2,
+            distributed_executor_backend="mp",
+            nnodes=2,
+        ),
+    )
+    assert cfg.scheduler_config.async_scheduling is True
+
+
 @dataclass
 class _TestConfigFields:
     a: int
@@ -52,9 +66,6 @@ class _TestConfigFields:
 
 
 def test_get_field():
-    with pytest.raises(ValueError):
-        get_field(_TestConfigFields, "a")
-
     b = get_field(_TestConfigFields, "b")
     assert isinstance(b, Field)
     assert b.default is MISSING
@@ -132,7 +143,7 @@ def test_pooling_runner(model_id, expected_runner_type, expected_convert_type):
 @pytest.mark.parametrize(
     ("model_id", "expected_runner_type", "expected_convert_type"),
     [
-        (os.path.join(models_path_prefix, "Qwen/Qwen2.5-1.5B-Instruct"), "draft", "none"),
+        ("Qwen/Qwen2.5-1.5B-Instruct", "draft", "none"),
     ],
 )
 def test_draft_runner(model_id, expected_runner_type, expected_convert_type):
@@ -143,9 +154,9 @@ def test_draft_runner(model_id, expected_runner_type, expected_convert_type):
 
 
 MODEL_IDS_EXPECTED = [
-    (os.path.join(models_path_prefix, "Qwen/Qwen1.5-7B"), 32768),
-    (os.path.join(models_path_prefix, "mistralai/Mistral-7B-v0.1"), 4096),
-    (os.path.join(models_path_prefix, "mistralai/Mistral-7B-Instruct-v0.2"), 32768),
+    ("Qwen/Qwen1.5-7B", 32768),
+    ("mistralai/Mistral-7B-v0.1", 4096),
+    ("mistralai/Mistral-7B-Instruct-v0.2", 32768),
 ]
 
 
@@ -160,7 +171,7 @@ def test_disable_sliding_window(model_id_expected):
     current_platform.is_rocm(), reason="Xformers backend is not supported on ROCm."
 )
 def test_get_pooling_config():
-    model_id = os.path.join(models_path_prefix, "sentence-transformers/all-MiniLM-L12-v2")
+    model_id = "sentence-transformers/all-MiniLM-L12-v2"
     model_config = ModelConfig(model_id)
 
     assert model_config.pooler_config is not None
@@ -173,8 +184,8 @@ def test_get_pooling_config():
     current_platform.is_rocm(), reason="Xformers backend is not supported on ROCm."
 )
 def test_get_pooling_config_from_args():
-    model_id = os.path.join(models_path_prefix, "sentence-transformers/all-MiniLM-L12-v2")
-    pooler_config = PoolerConfig(seq_pooling_type="CLS", normalize=True)
+    model_id = "sentence-transformers/all-MiniLM-L12-v2"
+    pooler_config = PoolerConfig(seq_pooling_type="CLS", use_activation=False)
     model_config = ModelConfig(model_id, pooler_config=pooler_config)
 
     assert asdict(model_config.pooler_config) == asdict(pooler_config)
@@ -265,7 +276,7 @@ def test_rope_customization():
     LLAMA_ROPE_PARAMETERS = {"rope_theta": 500000.0, "rope_type": "default"}
     LONGCHAT_ROPE_PARAMETERS = {"rope_type": "linear", "factor": 8.0}
 
-    llama_model_config = ModelConfig(os.path.join(models_path_prefix, "meta-llama/Meta-Llama-3-8B-Instruct"))
+    llama_model_config = ModelConfig("meta-llama/Meta-Llama-3-8B-Instruct")
     assert (
         getattr(llama_model_config.hf_config, "rope_parameters", None)
         == LLAMA_ROPE_PARAMETERS
@@ -273,7 +284,7 @@ def test_rope_customization():
     assert llama_model_config.max_model_len == 8192
 
     llama_model_config = ModelConfig(
-        os.path.join(models_path_prefix, "meta-llama/Meta-Llama-3-8B-Instruct"),
+        "meta-llama/Meta-Llama-3-8B-Instruct",
         hf_overrides={"rope_parameters": TEST_ROPE_PARAMETERS},
     )
     assert (
@@ -282,7 +293,7 @@ def test_rope_customization():
     )
     assert llama_model_config.max_model_len == 16384
 
-    longchat_model_config = ModelConfig(os.path.join(models_path_prefix, "lmsys/longchat-13b-16k"))
+    longchat_model_config = ModelConfig("lmsys/longchat-13b-16k")
     # Check if LONGCHAT_ROPE_PARAMETERS entries are in longchat_model_config
     assert all(
         longchat_model_config.hf_config.rope_parameters.get(key) == value
@@ -291,7 +302,7 @@ def test_rope_customization():
     assert longchat_model_config.max_model_len == 16384
 
     longchat_model_config = ModelConfig(
-        os.path.join(models_path_prefix, "lmsys/longchat-13b-16k"),
+        "lmsys/longchat-13b-16k",
         hf_overrides={
             "rope_parameters": TEST_ROPE_PARAMETERS,
         },
@@ -307,7 +318,7 @@ def test_nested_hf_overrides():
     """Test that nested hf_overrides work correctly."""
     # Test with a model that has text_config
     model_config = ModelConfig(
-        os.path.join(models_path_prefix, "Qwen/Qwen2-VL-2B-Instruct"),
+        "Qwen/Qwen2-VL-2B-Instruct",
         hf_overrides={
             "text_config": {
                 "hidden_size": 1024,
@@ -318,7 +329,7 @@ def test_nested_hf_overrides():
 
     # Test with deeply nested overrides
     model_config = ModelConfig(
-        os.path.join(models_path_prefix, "Qwen/Qwen2-VL-2B-Instruct"),
+        "Qwen/Qwen2-VL-2B-Instruct",
         hf_overrides={
             "text_config": {
                 "hidden_size": 2048,
@@ -340,9 +351,9 @@ def test_nested_hf_overrides():
 @pytest.mark.parametrize(
     ("model_id", "is_encoder_decoder"),
     [
-        (os.path.join(models_path_prefix, "facebook/opt-125m"), False),
-        (os.path.join(models_path_prefix, "openai/whisper-tiny"), True),
-        (os.path.join(models_path_prefix, "meta-llama/Llama-3.2-1B-Instruct"), False),
+        ("facebook/opt-125m", False),
+        ("openai/whisper-tiny", True),
+        ("meta-llama/Llama-3.2-1B-Instruct", False),
     ],
 )
 def test_is_encoder_decoder(model_id, is_encoder_decoder):
@@ -354,8 +365,8 @@ def test_is_encoder_decoder(model_id, is_encoder_decoder):
 @pytest.mark.parametrize(
     ("model_id", "uses_mrope"),
     [
-        (os.path.join(models_path_prefix, "facebook/opt-125m"), False),
-        (os.path.join(models_path_prefix, "Qwen/Qwen2-VL-2B-Instruct"), True),
+        ("facebook/opt-125m", False),
+        ("Qwen/Qwen2-VL-2B-Instruct", True),
     ],
 )
 def test_uses_mrope(model_id, uses_mrope):
@@ -365,7 +376,7 @@ def test_uses_mrope(model_id, uses_mrope):
 
 
 def test_generation_config_loading():
-    model_id = os.path.join(models_path_prefix, "Qwen/Qwen2.5-1.5B-Instruct")
+    model_id = "Qwen/Qwen2.5-1.5B-Instruct"
 
     # When set generation_config to "vllm", the default generation config
     # will not be loaded.
@@ -842,7 +853,7 @@ def test_vllm_config_defaults_are_none():
 
 
 @pytest.mark.parametrize(
-    ("model_id", "compiliation_config", "optimization_level"),
+    ("model_id", "compilation_config", "optimization_level"),
     [
         (
             None,
@@ -884,7 +895,7 @@ def test_vllm_config_defaults_are_none():
         ("RedHatAI/DeepSeek-V2.5-1210-FP8", CompilationConfig(), OptimizationLevel.O3),
     ],
 )
-def test_vllm_config_defaults(model_id, compiliation_config, optimization_level):
+def test_vllm_config_defaults(model_id, compilation_config, optimization_level):
     """Test that optimization-level defaults are correctly applied."""
 
     model_config = None
@@ -892,12 +903,12 @@ def test_vllm_config_defaults(model_id, compiliation_config, optimization_level)
         model_config = ModelConfig(model_id)
         vllm_config = VllmConfig(
             model_config=model_config,
-            compilation_config=compiliation_config,
+            compilation_config=compilation_config,
             optimization_level=optimization_level,
         )
     else:
         vllm_config = VllmConfig(
-            compilation_config=compiliation_config,
+            compilation_config=compilation_config,
             optimization_level=optimization_level,
         )
     # Use the global optimization level defaults
@@ -915,12 +926,17 @@ def test_vllm_config_defaults(model_id, compiliation_config, optimization_level)
     # Verify other compilation_config defaults
     compilation_config_dict = default_config["compilation_config"]
     for k, v in compilation_config_dict.items():
-        if k != "pass_config":
-            actual = getattr(vllm_config.compilation_config, k)
-            expected = v(vllm_config) if callable(v) else v
-            assert actual == expected, (
-                f"compilation_config.{k}: expected {expected}, got {actual}"
-            )
+        if k == "pass_config":
+            continue
+        actual = getattr(vllm_config.compilation_config, k)
+        expected = v(vllm_config) if callable(v) else v
+        # On platforms without static graph support, __post_init__ forces
+        # cudagraph_mode to NONE; expect that instead of the level default.
+        if k == "cudagraph_mode" and not current_platform.support_static_graph_mode():
+            expected = CUDAGraphMode.NONE
+        assert actual == expected, (
+            f"compilation_config.{k}: expected {expected}, got {actual}"
+        )
 
 
 def test_vllm_config_callable_defaults():
@@ -958,6 +974,10 @@ def test_vllm_config_callable_defaults():
     assert enable_if_sequential(config_quantized) is True
 
 
+@pytest.mark.skipif(
+    not current_platform.support_static_graph_mode(),
+    reason="Explicit overrides may be force-overwritten without static graph support.",
+)
 def test_vllm_config_explicit_overrides():
     """Test that explicit property overrides work correctly with callable defaults.
 
@@ -991,7 +1011,7 @@ def test_vllm_config_explicit_overrides():
     assert config.compilation_config.pass_config.fuse_attn_quant is True
 
     # Explicit cudagraph mode override on quantized model at O2
-    pass_config = PassConfig(fuse_gemm_comms=True)
+    pass_config = PassConfig(enable_qk_norm_rope_fusion=True)
     compilation_config = CompilationConfig(
         cudagraph_mode=CUDAGraphMode.NONE, pass_config=pass_config
     )
@@ -1001,7 +1021,7 @@ def test_vllm_config_explicit_overrides():
         compilation_config=compilation_config,
     )
     assert config.compilation_config.cudagraph_mode == CUDAGraphMode.NONE
-    assert config.compilation_config.pass_config.fuse_gemm_comms is True
+    assert config.compilation_config.pass_config.enable_qk_norm_rope_fusion is True
     # Mode should still use default for O2
     assert config.compilation_config.mode == CompilationMode.VLLM_COMPILE
 

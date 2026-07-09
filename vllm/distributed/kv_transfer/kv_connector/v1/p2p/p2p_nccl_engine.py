@@ -218,7 +218,7 @@ class P2pNcclEngine:
             data = {"cmd": "NEW", "unique_id": bytes(unique_id.internal)}
             sock.send(msgpack.dumps(data))
 
-            with torch.cuda.device(self.device):
+            with torch.accelerator.device_index(self.device.index):
                 rank = 0
                 with set_p2p_nccl_context(self.nccl_num_channels):
                     comm: ncclComm_t = self.nccl.ncclCommInitRank(2, unique_id, rank)
@@ -377,7 +377,7 @@ class P2pNcclEngine:
             data = msgpack.loads(message)
             if data["cmd"] == "NEW":
                 unique_id = self.nccl.unique_id_from_bytes(bytes(data["unique_id"]))
-                with torch.cuda.device(self.device):
+                with torch.accelerator.device_index(self.device.index):
                     rank = 1
                     with set_p2p_nccl_context(self.nccl_num_channels):
                         comm: ncclComm_t = self.nccl.ncclCommInitRank(
@@ -407,14 +407,14 @@ class P2pNcclEngine:
                         # Store Tensor in memory pool
                         addr = self.pool.store_tensor(tensor)
                         tensor = (addr, tensor.dtype, tensor.shape)
-                        # logger.warning(
-                        #     "🔴[PUT]Recv Tensor, Out Of Threshold, "
-                        #     "%s👈%s, data:%s, addr:%d",
-                        #     self.zmq_address,
-                        #     remote_address.decode(),
-                        #     data,
-                        #     addr,
-                        # )
+                        logger.warning(
+                            "🔴[PUT]Recv Tensor, Out Of Threshold, "
+                            "%s👈%s, data:%s, addr:%d",
+                            self.zmq_address,
+                            remote_address.decode(),
+                            data,
+                            addr,
+                        )
                     else:
                         self.buffer_size += tensor_size
 

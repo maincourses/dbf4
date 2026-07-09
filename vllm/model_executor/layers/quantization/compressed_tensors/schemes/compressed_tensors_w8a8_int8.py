@@ -5,15 +5,13 @@ from collections.abc import Callable
 
 import torch
 from compressed_tensors.quantization import QuantizationStrategy
-import os
 
-import vllm.envs as envs
 from vllm.logger import init_logger
+from vllm.model_executor.kernels.linear import (
+    init_int8_linear_kernel,
+)
 from vllm.model_executor.layers.quantization.compressed_tensors.schemes import (
     CompressedTensorsScheme,
-)
-from vllm.model_executor.layers.quantization.kernels.scaled_mm import (
-    init_int8_linear_kernel,
 )
 from vllm.model_executor.parameter import (
     BasevLLMParameter,
@@ -21,7 +19,6 @@ from vllm.model_executor.parameter import (
     ModelWeightParameter,
     PerTensorScaleParameter,
 )
-from vllm.model_executor.layers.quantization.utils.w8a8_utils import apply_int8_linear
 
 logger = init_logger(__name__)
 
@@ -32,7 +29,6 @@ class CompressedTensorsW8A8Int8(CompressedTensorsScheme):
     ):
         self.strategy = strategy
         self.is_static_input_scheme = is_static_input_scheme
-        self.w8a8_strategy = envs.VLLM_W8A8_BACKEND
         self.input_symmetric = input_symmetric
 
     @classmethod
@@ -111,16 +107,6 @@ class CompressedTensorsW8A8Int8(CompressedTensorsScheme):
         self.kernel.process_weights_after_loading(layer)
 
     def apply_weights(
-        self, layer: torch.nn.Module, x: torch.Tensor, bias: torch.Tensor | None, input_quant_args: list[torch.Tensor] | None = None, silu_quant_args: list[torch.Tensor] | None = None, **_
+        self, layer: torch.nn.Module, x: torch.Tensor, bias: torch.Tensor | None
     ) -> torch.Tensor:
-        # return self.kernel.apply_weights(layer, x, bias)
-        return apply_int8_linear(input=x,
-                                 weight=layer.weight,
-                                 weight_scale=layer.weight_scale,
-                                 input_scale=layer.input_scale,
-                                 input_zero_point=layer.input_zero_point,
-                                 azp_adj=layer.azp_adj,
-                                 bias=bias,
-                                 w8a8_strategy=self.w8a8_strategy,
-                                 input_quant_args=input_quant_args,
-                                 silu_quant_args=silu_quant_args)
+        return self.kernel.apply_weights(layer, x, bias)

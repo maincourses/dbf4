@@ -2,7 +2,6 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 """Test that we handle a startup Error and shutdown."""
 
-import os
 import pytest
 
 from tests.utils import wait_for_gpu_memory_to_clear
@@ -15,9 +14,8 @@ from vllm.engine.arg_utils import AsyncEngineArgs
 from vllm.sampling_params import RequestOutputKind
 from vllm.utils.torch_utils import cuda_device_count_stateless
 from vllm.v1.engine.async_llm import AsyncLLM
-from ...utils import models_path_prefix
 
-MODELS = [os.path.join(models_path_prefix, "hmellor/tiny-random-LlamaForCausalLM")]
+MODELS = ["hmellor/tiny-random-LlamaForCausalLM"]
 
 
 @pytest.mark.asyncio

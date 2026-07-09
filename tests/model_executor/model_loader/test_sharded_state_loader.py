@@ -13,7 +13,7 @@ from huggingface_hub import snapshot_download
 
 from vllm import LLM, SamplingParams
 from vllm.model_executor.model_loader import ShardedStateLoader
-from utils import models_path_prefix
+from vllm.platforms import current_platform
 
 prompts = [
     "Hello, my name is",
@@ -53,7 +53,7 @@ def test_filter_subtensors():
 @pytest.fixture(scope="module")
 def llama_3p2_1b_files():
     input_dir = snapshot_download(
-        os.path.join(models_path_prefix, "meta-llama/Llama-3.2-1B-Instruct"), ignore_patterns=["*.bin*", "original/*"]
+        "meta-llama/Llama-3.2-1B-Instruct", ignore_patterns=["*.bin*", "original/*"]
     )
 
     yield input_dir
@@ -96,6 +96,10 @@ def test_sharded_state_loader(
     input_dir = llama_3p2_1b_files
     ctx = mp.get_context("spawn")
 
+    platform_args = {}
+    if current_platform.is_rocm():
+        platform_args["max_num_seqs"] = 1
+
     # Run in separate processes for memory & CUDA isolation
     with TemporaryDirectory() as output_dir:
         p = ctx.Process(
@@ -105,6 +109,7 @@ def test_sharded_state_loader(
                 tensor_parallel_size=tp_size,
                 gpu_memory_utilization=gpu_memory_utilization,
                 enforce_eager=True,
+                **platform_args,
             ),
         )
         p.start()
@@ -119,6 +124,7 @@ def test_sharded_state_loader(
                 enable_lora=enable_lora,
                 gpu_memory_utilization=gpu_memory_utilization,
                 tensor_parallel_size=tp_size,
+                **platform_args,
             ),
         )
         p.start()
@@ -142,6 +148,7 @@ def test_sharded_state_loader(
                 gpu_memory_utilization=gpu_memory_utilization,
                 tensor_parallel_size=tp_size,
                 load_format="sharded_state",
+                **platform_args,
             ),
         )
         p.start()

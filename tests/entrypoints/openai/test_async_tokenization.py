@@ -5,15 +5,13 @@ import asyncio
 import random
 from collections.abc import Callable
 
-import os
 import openai
 import pytest
 import pytest_asyncio
 
 from tests.utils import RemoteOpenAIServer
-from ...utils import models_path_prefix
 
-MODEL_NAME = os.path.join(models_path_prefix, "Qwen/Qwen2.5-1.5B-Instruct")
+MODEL_NAME = "Qwen/Qwen2.5-1.5B-Instruct"
 
 
 @pytest.fixture(scope="module")

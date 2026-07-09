@@ -2,15 +2,15 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
 import pytest
-import os
 import torch
+from packaging.version import Version
+from transformers import __version__ as TRANSFORMERS_VERSION
 
 from vllm.platforms import current_platform
 
 from ....utils import large_gpu_mark
 from ...registry import HF_EXAMPLE_MODELS
 from ...utils import check_logprobs_close
-from ....utils import models_path_prefix
 
 # Models that require embedding scaling for prompt_embeds test
 EMBED_SCALING_MODELS = {
@@ -23,12 +23,12 @@ EMBED_SCALING_MODELS = {
 # needed as all the models will be calling AITER kernels
 # in parts of the operators
 AITER_MODEL_LIST = [
-    os.path.join(models_path_prefix, "meta-llama/Llama-3.2-1B-Instruct"),
-    os.path.join(models_path_prefix, "openbmb/MiniCPM3-4B"),
-    os.path.join(models_path_prefix, "Qwen/Qwen-7B-Chat"),
-    os.path.join(models_path_prefix, "Qwen/Qwen2.5-0.5B-Instruct"),
-    os.path.join(models_path_prefix, "TitanML/tiny-mixtral"),
-    os.path.join(models_path_prefix, "Qwen/Qwen3-8B"),
+    "meta-llama/Llama-3.2-1B-Instruct",
+    "openbmb/MiniCPM3-4B",
+    "Qwen/Qwen-7B-Chat",
+    "Qwen/Qwen2.5-0.5B-Instruct",
+    "TitanML/tiny-mixtral",
+    "Qwen/Qwen3-8B",
 ]
 
 
@@ -37,7 +37,7 @@ AITER_MODEL_LIST = [
     "model",
     [
         pytest.param(
-            os.path.join(models_path_prefix, "bigscience/bloom-560m"),  # bloom - testing alibi slopes
+            "bigscience/bloom-560m",  # bloom - testing alibi slopes
             marks=[
                 pytest.mark.core_model,
                 pytest.mark.slow_test,
@@ -45,14 +45,14 @@ AITER_MODEL_LIST = [
             ],
         ),
         pytest.param(
-            os.path.join(models_path_prefix, "openai-community/gpt2"),  # gpt2
+            "openai-community/gpt2",  # gpt2
             marks=[pytest.mark.core_model, pytest.mark.cpu_model],
         ),
-        pytest.param(os.path.join(models_path_prefix, "Milos/slovak-gpt-j-405M")),  # gptj
-        pytest.param(os.path.join(models_path_prefix, "bigcode/tiny_starcoder_py")),  # gpt_bigcode
-        pytest.param(os.path.join(models_path_prefix, "EleutherAI/pythia-70m")),  # gpt_neox
+        pytest.param("Milos/slovak-gpt-j-405M"),  # gptj
+        pytest.param("bigcode/tiny_starcoder_py"),  # gpt_bigcode
+        pytest.param("EleutherAI/pythia-70m"),  # gpt_neox
         pytest.param(
-            os.path.join(models_path_prefix, "google/gemma-1.1-2b-it"),  # gemma
+            "google/gemma-1.1-2b-it",  # gemma
             marks=[
                 pytest.mark.core_model,
                 pytest.mark.cpu_model,
@@ -60,33 +60,33 @@ AITER_MODEL_LIST = [
             ],
         ),
         pytest.param(
-            os.path.join(models_path_prefix, "google/gemma-2-2b-it"),  # test hybrid attention
+            "google/gemma-2-2b-it",  # test hybrid attention
             marks=[pytest.mark.cpu_model],
         ),
         pytest.param(
-            os.path.join(models_path_prefix, "zai-org/chatglm3-6b"),  # chatglm (text-only)
+            "zai-org/chatglm3-6b",  # chatglm (text-only)
         ),
         pytest.param(
-            os.path.join(models_path_prefix, "meta-llama/Llama-3.2-1B-Instruct"),  # llama
+            "meta-llama/Llama-3.2-1B-Instruct",  # llama
             marks=[pytest.mark.core_model, pytest.mark.cpu_model],
         ),
         pytest.param(
-            os.path.join(models_path_prefix, "openbmb/MiniCPM4.1-8B"),  # minicpm
+            "openbmb/MiniCPM4.1-8B",  # minicpm
             marks=[pytest.mark.core_model, large_gpu_mark(min_gb=48)],
         ),
         pytest.param(
-            os.path.join(models_path_prefix, "facebook/opt-125m"),  # opt
+            "facebook/opt-125m",  # opt
             marks=[pytest.mark.core_model, pytest.mark.cpu_model],
         ),
         pytest.param(
-            os.path.join(models_path_prefix, "microsoft/phi-2"),  # phi
+            "microsoft/phi-2",  # phi
             marks=[pytest.mark.core_model, pytest.mark.slow_test],
         ),
         pytest.param(
-            os.path.join(models_path_prefix, "Qwen/Qwen-7B-Chat"),  # qwen (text-only)
+            "Qwen/Qwen-7B-Chat",  # qwen (text-only)
         ),
         pytest.param(
-            os.path.join(models_path_prefix, "Qwen/Qwen2.5-0.5B-Instruct"),  # qwen2
+            "Qwen/Qwen2.5-0.5B-Instruct",  # qwen2
             marks=[
                 pytest.mark.core_model,
                 pytest.mark.cpu_model,
@@ -94,15 +94,19 @@ AITER_MODEL_LIST = [
             ],
         ),
         pytest.param(
-            os.path.join(models_path_prefix, "Qwen/Qwen3-8B"),  # qwen (text-only)
+            "Qwen/Qwen3-8B",  # qwen (text-only)
         ),
-        pytest.param(os.path.join(models_path_prefix, "stabilityai/stablelm-3b-4e1t")),  # stablelm
-        pytest.param(os.path.join(models_path_prefix, "bigcode/starcoder2-3b")),  # starcoder2
+        pytest.param("stabilityai/stablelm-3b-4e1t"),  # stablelm
+        pytest.param("bigcode/starcoder2-3b"),  # starcoder2
         pytest.param(
-            os.path.join(models_path_prefix, "TitanML/tiny-mixtral"),  # mixtral
+            "TitanML/tiny-mixtral",  # mixtral
             marks=[pytest.mark.core_model, pytest.mark.cpu_model],
         ),
         pytest.param("swiss-ai/Apertus-8B-Instruct-2509"),  # apertus
+        pytest.param(
+            "naver-hyperclovax/HyperCLOVAX-SEED-Think-14B",  # hyperclovax
+            marks=[large_gpu_mark(min_gb=32)],
+        ),
     ],
 )
 @pytest.mark.parametrize("max_tokens", [32])
@@ -128,6 +132,10 @@ def test_models(
 
     if use_rocm_aiter and (model in AITER_MODEL_LIST):
         monkeypatch.setenv("VLLM_ROCM_USE_AITER", "1")
+        if model == "TitanML/tiny-mixtral":
+            # Untrained model: near-uniform logits make argmax sensitive to
+            # AITER's bfloat16 rounding error in plain rms_norm.
+            monkeypatch.setenv("VLLM_ROCM_USE_AITER_RMSNORM", "0")
     elif use_rocm_aiter and model not in AITER_MODEL_LIST:
         # Skip model that are not using AITER tests.
         # When more AITER kernels are added, this list will not be
@@ -148,6 +156,16 @@ def test_models(
             )
             if prompt_embeds is not None:
                 embed = hf_model.model.get_input_embeddings()(token_ids)
+
+                if "gemma" in model.lower() and (
+                    Version(TRANSFORMERS_VERSION) < Version("5.3.0.dev0")
+                ):
+                    # For Gemma 1/2 models with Transformers 5.4.0+, the prompt
+                    # embeddings are normalised in `get_prompt_embeddings`,
+                    # like Gemma 3. For older versions, we need to manually normalise.
+                    embed_scale = hf_model.config.hidden_size**0.5
+                    normalizer = torch.tensor(embed_scale, dtype=embed.dtype)
+                    embed *= normalizer
 
                 # MiniCPM models apply scale_emb to embeddings internally.
                 # vLLM expects pre-scaled embeddings when using inputs_embeds.
@@ -197,4 +215,4 @@ def test_models(
         # unit tests. On ROCm, when using AITER
         # the memory might not be deallocated completely
         # before running the next test case
-        torch.cuda.synchronize()
+        torch.accelerator.synchronize()

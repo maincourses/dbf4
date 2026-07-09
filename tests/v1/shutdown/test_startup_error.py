@@ -2,7 +2,6 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 """Test that we handle a startup Error and shutdown."""
 
-import os
 import inspect
 
 import pytest
@@ -18,9 +17,8 @@ from vllm.engine.arg_utils import AsyncEngineArgs
 from vllm.model_executor.models.llama import LlamaForCausalLM
 from vllm.utils.torch_utils import cuda_device_count_stateless
 from vllm.v1.engine.async_llm import AsyncLLM
-from ...utils import models_path_prefix
 
-MODELS = [os.path.join(models_path_prefix, "hmellor/tiny-random-LlamaForCausalLM")]
+MODELS = ["hmellor/tiny-random-LlamaForCausalLM"]
 
 
 def evil_method(self, *args, **kwargs):
@@ -70,7 +68,7 @@ def test_async_llm_startup_error(
     )
 
     # Confirm we get an exception.
-    with pytest.raises(Exception, match="initialization failed"):
+    with pytest.raises(Exception, match=r"initialization fail(ed|ure)"):
         _ = AsyncLLM.from_engine_args(engine_args)
 
     # Confirm all the processes are cleaned up.
@@ -99,7 +97,7 @@ def test_llm_startup_error(
     """
     # Skip non-Llama models since we monkeypatch LlamaForCausalLM specifically.
     # If MODELS list grows, each architecture needs its own test variant.
-    if model != os.path.join(models_path_prefix, "JackFram/llama-68m"):
+    if model != "JackFram/llama-68m":
         pytest.skip(reason="Only test JackFram/llama-68m")
     if cuda_device_count_stateless() < tensor_parallel_size:
         pytest.skip(reason="Not enough CUDA devices")
@@ -113,7 +111,7 @@ def test_llm_startup_error(
 
         with pytest.raises(
             Exception,
-            match="initialization failed"
+            match=r"initialization fail(ed|ure)"
             if enable_multiprocessing
             else "Simulated Error in startup!",
         ):

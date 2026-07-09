@@ -2,14 +2,12 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 # Datastructures defining a GPU input batch
 
-from dataclasses import dataclass, field
-from typing import Optional, cast
+from dataclasses import dataclass
+from typing import cast
 
 import numpy as np
 import torch
 
-from vllm import envs
-from vllm.config import get_current_vllm_config
 from vllm.lora.request import LoRARequest
 from vllm.multimodal.inputs import MultiModalFeatureSpec
 from vllm.pooling_params import PoolingParams
@@ -47,12 +45,6 @@ class CachedRequestState:
 
     lora_request: LoRARequest | None = None
     prompt_embeds: torch.Tensor | None = None
-    _prompt_token_ids_np: np.ndarray | None = field(
-        default=None,
-        init=False,
-        repr=False,
-        compare=False,
-    )
 
     # Used when both async_scheduling and spec_decode are enabled.
     prev_num_draft_len: int = 0
@@ -104,11 +96,6 @@ class InputBatch:
         is_pooling_model: bool = False,
         cp_kv_cache_interleave_size: int = 1,
     ):
-        ori_max_num_reqs = max_num_reqs
-        if is_spec_decode and envs.VLLM_REJECT_SAMPLE_OPT:
-            vllm_config = get_current_vllm_config()
-            max_num_reqs = max_num_reqs * (1 + vllm_config.speculative_config.num_speculative_tokens)
-
         self.is_pooling_model = is_pooling_model
         self.is_spec_decode = is_spec_decode
         self.max_num_reqs = max_num_reqs
@@ -126,7 +113,7 @@ class InputBatch:
         # This buffer is not directly transferred to the GPU, so it does not
         # need to be pinned.
         self.token_ids_cpu_tensor = torch.zeros(
-            (ori_max_num_reqs, max_model_len),
+            (max_num_reqs, max_model_len),
             device="cpu",
             dtype=torch.int32,
             pin_memory=False,
@@ -140,7 +127,13 @@ class InputBatch:
         # allocation if max_model_len is big.
         # Maps req_index -> tensor of shape (num_prompt_tokens, hidden_size)
         self.req_prompt_embeds: dict[int, torch.Tensor] = {}
-        self.num_tokens_no_spec = np.zeros(max_num_reqs, dtype=np.int32)
+        self.num_tokens_no_spec_cpu_tensor = torch.zeros(
+            (max_num_reqs,),
+            device="cpu",
+            dtype=torch.int32,
+            pin_memory=pin_memory,
+        )
+        self.num_tokens_no_spec = self.num_tokens_no_spec_cpu_tensor.numpy()
         self.num_prompt_tokens = np.zeros(max_num_reqs, dtype=np.int32)
         self.num_computed_tokens_cpu_tensor = torch.zeros(
             (max_num_reqs,),
@@ -338,41 +331,15 @@ class InputBatch:
         )
         self.num_prompt_tokens[req_index] = num_prompt_tokens
         start_idx = num_prompt_tokens
+        end_idx = start_idx + len(request.output_token_ids)
         if request.prompt_token_ids is not None:
-            if not envs.VLLM_V1_FAST_TOKEN_ID_COPY:
-                self.token_ids_cpu[req_index, :num_prompt_tokens] = request.prompt_token_ids
-            else:
-                prompt_token_ids_np = request._prompt_token_ids_np
-                rebuild_prompt_cache = True
-                if prompt_token_ids_np is not None:
-                    rebuild_prompt_cache = (
-                        prompt_token_ids_np.dtype != np.int32
-                        or prompt_token_ids_np.size != num_prompt_tokens
-                    )
-                if rebuild_prompt_cache:
-                    prompt_token_ids_np = np.asarray(request.prompt_token_ids, dtype=np.int32)
-                    request._prompt_token_ids_np = prompt_token_ids_np
-                np.copyto(
-                    self.token_ids_cpu[req_index, :num_prompt_tokens],
-                    prompt_token_ids_np,
-                    casting="no",
-                )
+            self.token_ids_cpu[req_index, :num_prompt_tokens] = request.prompt_token_ids
             self.is_token_ids[req_index, :num_prompt_tokens] = True
         else:
             self.is_token_ids[req_index, :num_prompt_tokens] = False
         if request.prompt_embeds is not None:
             self.req_prompt_embeds[req_index] = request.prompt_embeds
-        if not envs.VLLM_V1_FAST_TOKEN_ID_COPY:
-            end_idx = start_idx + len(request.output_token_ids)
-            self.token_ids_cpu[req_index, start_idx:end_idx] = request.output_token_ids
-        else:
-            output_token_ids_np = np.asarray(request.output_token_ids, dtype=np.int32)
-            end_idx = start_idx + output_token_ids_np.size
-            np.copyto(
-                self.token_ids_cpu[req_index, start_idx:end_idx],
-                output_token_ids_np,
-                casting="no",
-            )
+        self.token_ids_cpu[req_index, start_idx:end_idx] = request.output_token_ids
         self.is_token_ids[req_index, start_idx:end_idx] = True
         # Number of tokens without spec decode tokens.
         self.num_tokens_no_spec[req_index] = request.num_tokens
@@ -792,13 +759,13 @@ class InputBatch:
         del self.req_output_token_ids[num_reqs:]
         del self.spec_token_ids[num_reqs:]
 
-    def refresh_metadata(self, repeat_counts: Optional[torch.Tensor] = None):
+    def refresh_metadata(self):
         """Apply any batch updates to sampling metadata."""
 
         if self.is_pooling_model:
             batch_changed = self.batch_update_builder.reset()
             if batch_changed:
-                self.sampling_metadata = self._make_sampling_metadata(repeat_counts)
+                self.sampling_metadata = self._make_sampling_metadata()
             return
 
         # For non-pooling models - generate and apply logitsprocs update;
@@ -807,47 +774,37 @@ class InputBatch:
         batch_update = self.batch_update_builder.get_and_reset(self.num_reqs)
         for logit_proc in self.logitsprocs.all:
             logit_proc.update_state(batch_update)
-        if batch_update or repeat_counts is not None:
-            self.sampling_metadata = self._make_sampling_metadata(repeat_counts)
+        if batch_update:
+            self.sampling_metadata = self._make_sampling_metadata()
 
-    def _make_sampling_metadata(self, repeat_counts: Optional[torch.Tensor] = None) -> SamplingMetadata:
+    def _make_sampling_metadata(self) -> SamplingMetadata:
         num_reqs = self.num_reqs
-        # Host-side summaries for reduced top-k/top-p sampling.
-        # Compute before copy_slice(top_k), which may rewrite top_k_cpu_tensor
-        # when repeat_counts is provided.
-        max_top_k = None
-        has_any_no_top_k = False
-        if not self.no_top_k and num_reqs > 0:
-            top_k_cpu = self.top_k_cpu[:num_reqs]
-            max_top_k = int(top_k_cpu.max())
-            has_any_no_top_k = bool((top_k_cpu == self.vocab_size).any())
-
         if not self.all_greedy:
             temperature = copy_slice(
-                self.temperature_cpu_tensor, self.temperature, 
-                num_reqs, repeat_counts
+                self.temperature_cpu_tensor, self.temperature, num_reqs
             )
         else:
             temperature = None
-
         if not self.no_top_p:
-            top_p = copy_slice(self.top_p_cpu_tensor, self.top_p, num_reqs, repeat_counts)
+            copy_slice(self.top_p_cpu_tensor, self.top_p, num_reqs)
         if not self.no_top_k:
-            top_k = copy_slice(self.top_k_cpu_tensor, self.top_k, num_reqs, repeat_counts)
+            copy_slice(self.top_k_cpu_tensor, self.top_k, num_reqs)
 
         if not self.no_penalties:
             # Since syncing these tensors is expensive only copy them
             # if necessary i.e. if there are requests which require
             # penalties to be applied during sampling.
-            frequency_penalties = copy_slice(self.frequency_penalties_cpu_tensor,
-                       self.frequency_penalties, num_reqs,
-                       repeat_counts)
-            presence_penalties = copy_slice(self.presence_penalties_cpu_tensor,
-                       self.presence_penalties, num_reqs,
-                       repeat_counts)
-            repetition_penalties = copy_slice(self.repetition_penalties_cpu_tensor,
-                       self.repetition_penalties, num_reqs,
-                       repeat_counts)
+            copy_slice(
+                self.frequency_penalties_cpu_tensor, self.frequency_penalties, num_reqs
+            )
+            copy_slice(
+                self.presence_penalties_cpu_tensor, self.presence_penalties, num_reqs
+            )
+            copy_slice(
+                self.repetition_penalties_cpu_tensor,
+                self.repetition_penalties,
+                num_reqs,
+            )
 
         needs_prompt_token_ids = (
             not self.no_penalties
@@ -877,30 +834,31 @@ class InputBatch:
         allowed_token_ids_mask: torch.Tensor | None = None
         if not self.no_allowed_token_ids:
             assert self.allowed_token_ids_mask is not None
-            allowed_token_ids_mask = copy_slice(self.allowed_token_ids_mask_cpu_tensor,
-                       self.allowed_token_ids_mask, num_reqs,
-                       repeat_counts)
+            copy_slice(
+                self.allowed_token_ids_mask_cpu_tensor,
+                self.allowed_token_ids_mask,
+                num_reqs,
+            )
+            allowed_token_ids_mask = self.allowed_token_ids_mask[:num_reqs]
 
         return SamplingMetadata(
             temperature=temperature,
             all_greedy=self.all_greedy,
             all_random=self.all_random,
-            top_p=None if self.no_top_p else top_p,
-            top_k=None if self.no_top_k else top_k,
+            top_p=None if self.no_top_p else self.top_p[:num_reqs],
+            top_k=None if self.no_top_k else self.top_k[:num_reqs],
             generators=self.generators,
             max_num_logprobs=self.max_num_logprobs,
             prompt_token_ids=prompt_token_ids,
-            frequency_penalties=None if self.no_penalties else frequency_penalties,
-            presence_penalties=None if self.no_penalties else presence_penalties,
-            repetition_penalties=None if self.no_penalties else repetition_penalties,
+            frequency_penalties=self.frequency_penalties[:num_reqs],
+            presence_penalties=self.presence_penalties[:num_reqs],
+            repetition_penalties=self.repetition_penalties[:num_reqs],
             output_token_ids=output_token_ids,
             spec_token_ids=self.spec_token_ids,
             no_penalties=self.no_penalties,
             allowed_token_ids_mask=allowed_token_ids_mask,
             bad_words_token_ids=self.bad_words_token_ids,
             logitsprocs=self.logitsprocs,
-            max_top_k=max_top_k,
-            has_any_no_top_k=has_any_no_top_k,
         )
 
     def get_pooling_params(self) -> list[PoolingParams]:

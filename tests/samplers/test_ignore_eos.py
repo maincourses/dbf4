@@ -6,14 +6,12 @@ Run `pytest tests/samplers/test_ignore_eos.py`.
 """
 
 import pytest
-import os
 
 from vllm import SamplingParams
-from ..utils import models_path_prefix
 
 # We also test with llama because it has generation_config to specify EOS
 # (past regression).
-MODELS = [os.path.join(models_path_prefix, "distilbert/distilgpt2"), os.path.join(models_path_prefix, "meta-llama/Llama-3.2-1B")]
+MODELS = ["distilbert/distilgpt2", "meta-llama/Llama-3.2-1B"]
 
 
 @pytest.mark.parametrize("model", MODELS)

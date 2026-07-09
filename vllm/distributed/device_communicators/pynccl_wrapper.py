@@ -93,7 +93,7 @@ class ncclDataTypeEnum:
             return cls.ncclFloat64
         if dtype == torch.bfloat16:
             return cls.ncclBfloat16
-        if dtype == torch.float8_e4m3fn:
+        if dtype == current_platform.fp8_dtype():
             return cls.ncclFloat8e4m3
         raise ValueError(
             f"Unsupported dtype {dtype}: should be one of "
@@ -323,7 +323,7 @@ class NCCLLibrary:
         except Exception as e:
             logger.error(
                 "Failed to load NCCL library from %s. "
-                "It is expected if you are not running on NVIDIA/hcus."
+                "It is expected if you are not running on NVIDIA/AMD GPUs."
                 "Otherwise, the nccl library might not exist, be corrupted "
                 "or it does not support the current platform %s. "
                 "If you already have the library, please set the "

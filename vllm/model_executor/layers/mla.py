@@ -4,15 +4,10 @@ from dataclasses import dataclass
 
 import torch
 
-from vllm.attention.layer import MLAAttention
 from vllm.config import CacheConfig
-import vllm.envs as envs
-from vllm.forward_context import get_forward_context
 from vllm.model_executor.custom_op import PluggableLayer
+from vllm.model_executor.layers.attention import MLAAttention
 from vllm.model_executor.layers.quantization import QuantizationConfig
-from vllm.distributed import (
-    tensor_model_parallel_all_gather,
-)
 
 
 @dataclass
@@ -40,7 +35,7 @@ class MultiHeadLatentAttentionWrapper(PluggableLayer):
     """Pluggable MLA layer which allows OOT backends to add
     custom implementations of the outer MLA layer (including rope & o_proj).
     Note that currently oot platforms can still use CustomOp.register_oot to
-    replace MLA layer entirly, although we use PluggableLayer to register
+    replace MLA layer entirely, although we use PluggableLayer to register
     this layer now.
 
     This class takes positions and hidden_states as input.
@@ -120,7 +115,6 @@ class MultiHeadLatentAttentionWrapper(PluggableLayer):
         positions: torch.Tensor,
         hidden_states: torch.Tensor,
         llama_4_scaling: torch.Tensor | None = None,
-        *, iqis: tuple[torch.Tensor, torch.Tensor] | None = None
     ) -> torch.Tensor:
         q_c = None
         kv_lora = None
@@ -135,24 +129,14 @@ class MultiHeadLatentAttentionWrapper(PluggableLayer):
             assert self.q_b_proj is not None, (
                 "q_b_proj is required when q_lora_rank is not None"
             )
-            if envs.USE_FUSED_RMS_QUANT and iqis is not None:
-                qkv_lora = self.fused_qkv_a_proj(hidden_states, iqis=iqis)[0]
-            else:
-                qkv_lora = self.fused_qkv_a_proj(hidden_states)[0]
+
+            qkv_lora = self.fused_qkv_a_proj(hidden_states)[0]
             q_c, kv_lora = qkv_lora.split(
                 [self.q_lora_rank, self.kv_lora_rank + self.qk_rope_head_dim],
                 dim=-1,
             )
-            if envs.USE_FUSED_RMS_QUANT:
-                qa_iq, qa_is, _ = self.q_a_layernorm(x=q_c,
-                                                     residual=None, 
-                                                     quant_dtype=torch.int8,
-                                                     update_input=False)
-                q = self.q_b_proj(q_c, iqis=(qa_iq, qa_is))[0]
-                
-            else:
-                q_c = self.q_a_layernorm(q_c)
-                q = self.q_b_proj(q_c)[0]
+            q_c = self.q_a_layernorm(q_c)
+            q = self.q_b_proj(q_c)[0]
         else:
             assert self.kv_a_proj_with_mqa is not None, (
                 "kv_a_proj_with_mqa is required when q_lora_rank is None"
@@ -164,111 +148,30 @@ class MultiHeadLatentAttentionWrapper(PluggableLayer):
             q = self.q_proj(hidden_states)[0]
 
         kv_c, k_pe = kv_lora.split([self.kv_lora_rank, self.qk_rope_head_dim], dim=-1)
-        kv_cache_dtype = getattr(self.mla_attn, "kv_cache_dtype", "auto")
-        calculate_kv_scales = getattr(self.mla_attn, "calculate_kv_scales", False)
-
-        if not envs.VLLM_USE_LIGHTOP_RMS_ROPE_CONCAT:
-            kv_c_normed = self.kv_a_layernorm(kv_c)
+        kv_c_normed = self.kv_a_layernorm(kv_c)
 
         q = q.view(-1, self.num_heads, self.qk_head_dim)
         # Add head dim of 1 to k_pe
         k_pe = k_pe.unsqueeze(1)
 
-        # if not use_fused_rms_rope_concat and self.rotary_emb is not None:
-        if not envs.VLLM_USE_LIGHTOP_RMS_ROPE_CONCAT and self.rotary_emb is not None:
-            q[..., self.qk_nope_head_dim:], k_pe = self.rotary_emb(
-                positions, q[..., self.qk_nope_head_dim:], k_pe
+        if self.rotary_emb is not None:
+            q[..., self.qk_nope_head_dim :], k_pe = self.rotary_emb(
+                positions, q[..., self.qk_nope_head_dim :], k_pe
             )
 
         if self.indexer and self.is_sparse:
-            if envs.USE_FUSED_RMS_QUANT and iqis is not None:
-                _topk_indices = self.indexer(hidden_states, q_c, positions, self.indexer_rope_emb, iqis=iqis)
-            else:
-                _topk_indices = self.indexer(hidden_states, q_c, positions, self.indexer_rope_emb)
+            _topk_indices = self.indexer(
+                hidden_states, q_c, positions, self.indexer_rope_emb
+            )
 
         if llama_4_scaling is not None:
             q *= llama_4_scaling
 
-        enable_lightly_cp = get_forward_context().enable_lightly_cp
-        enable_lightly_cplb = get_forward_context().enable_lightly_cplb
-
-        # if not use_fused_rms_rope_concat:
-        if not envs.VLLM_USE_LIGHTOP_RMS_ROPE_CONCAT:
-            if enable_lightly_cp:
-                kv_c_normed = tensor_model_parallel_all_gather(
-                    kv_c_normed.contiguous(), 0
-                )
-                k_pe = tensor_model_parallel_all_gather(
-                    k_pe.contiguous(), 0
-                )
-
-                gather_indexes_tensor = get_forward_context().gather_indexes_tensor
-                if enable_lightly_cplb and gather_indexes_tensor is not None:
-                    # Reorder kv after pcp allgather.
-                    kv_c_normed = torch.index_select(kv_c_normed, 0, gather_indexes_tensor)
-                    k_pe = torch.index_select(k_pe, 0, gather_indexes_tensor)
-
-            attn_out = self.mla_attn(
-                q,
-                kv_c_normed,
-                k_pe,
-                output_shape=(hidden_states.shape[0],
-                              self.num_heads * self.v_head_dim),
-            )
-        else:
-            # Lightop fused path:
-            # - kv_c is passed as "unnormed" and written to kv_cache by the backend.
-            # - key_normed is an output buffer filled by the fused op and then
-            #   used for the prefill path.
-            # Keep kv_c/k_pe as views into the original kv_lora buffer so they
-            # share the same row stride. The lightop fused op requires
-            # `kv_c.stride(0) == k_pe.stride(0)`, which is not true if we make
-            # kv_c individually contiguous.
-            key_normed = torch.empty_like(kv_c,
-                                          memory_format=torch.contiguous_format)
-            weight = getattr(self.kv_a_layernorm, "weight", None)
-            epsilon = getattr(self.kv_a_layernorm, "variance_epsilon", 1e-6)
-            if weight is None:
-                raise RuntimeError(
-                    "VLLM_USE_LIGHTOP_RMS_ROPE_CONCAT requires kv_a_layernorm "
-                    "to have a 'weight' parameter."
-                )
-            # Keep cos_sin_cache on the same device/dtype as q.
-            if hasattr(self.rotary_emb, "_match_cos_sin_cache_dtype"):
-                # type: ignore[attr-defined]
-                self.rotary_emb._match_cos_sin_cache_dtype(q)
-            cos_sin_cache = getattr(self.rotary_emb, "cos_sin_cache", None)
-            if cos_sin_cache is None:
-                raise RuntimeError(
-                    "VLLM_USE_LIGHTOP_RMS_ROPE_CONCAT requires rotary_emb to "
-                    "expose 'cos_sin_cache'."
-                )
-
-            if enable_lightly_cp:
-                kv_c = tensor_model_parallel_all_gather(
-                    kv_c.contiguous(), 0
-                )
-                k_pe = tensor_model_parallel_all_gather(
-                    k_pe.contiguous(), 0
-                )
-                gather_indexes_tensor = get_forward_context().gather_indexes_tensor
-                if enable_lightly_cplb and gather_indexes_tensor is not None:
-                    # Reorder kv after pcp allgather.
-                    kv_c = torch.index_select(kv_c, 0, gather_indexes_tensor)
-                    k_pe = torch.index_select(k_pe, 0, gather_indexes_tensor)
-
-            attn_out = self.mla_attn(
-                q[..., self.qk_nope_head_dim:],
-                kv_c,
-                k_pe,
-                output_shape=(hidden_states.shape[0],
-                              self.num_heads * self.v_head_dim),
-                q_ori=q,
-                key_normed=key_normed,
-                positions=positions,
-                weight=weight,
-                cos_sin_cache=cos_sin_cache,
-                epsilon=epsilon,
-            )
+        attn_out = self.mla_attn(
+            q,
+            kv_c_normed,
+            k_pe,
+            output_shape=(hidden_states.shape[0], self.num_heads * self.v_head_dim),
+        )
 
         return self.o_proj(attn_out)[0]

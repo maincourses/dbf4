@@ -7,10 +7,11 @@ import torch
 import vllm._custom_ops as ops
 from vllm._aiter_ops import rocm_aiter_ops
 from vllm.distributed.eplb.eplb_state import EplbLayerState
-from vllm.model_executor.layers.fused_moe.config import RoutingMethodType
+from vllm.model_executor.layers.fused_moe.config import (
+    RoutingMethodType,
+    get_routing_method_type,
+)
 from vllm.model_executor.layers.fused_moe.router.base_router import BaseRouter
-import vllm.envs as envs
-from lightop import op as op
 
 
 def vllm_topk_softmax(
@@ -20,22 +21,13 @@ def vllm_topk_softmax(
     gating_output: torch.Tensor,
     renormalize: bool = False,
 ) -> tuple[torch.Tensor, ...]:
-    if envs.VLLM_USE_TOPK_RENORM and renormalize is True:
-        op.topk_softmax(
-            topk_weights,
-            topk_indices,
-            token_expert_indices,
-            gating_output,
-            renormalize,
-        )
-    else:
-        ops.topk_softmax(
-            topk_weights,
-            topk_indices,
-            token_expert_indices,
-            gating_output,
-            renormalize,
-        )
+    ops.topk_softmax(
+        topk_weights,
+        topk_indices,
+        token_expert_indices,
+        gating_output,
+        renormalize,
+    )
 
     return topk_weights, topk_indices
 
@@ -146,10 +138,12 @@ class FusedTopKRouter(BaseRouter):
 
     @property
     def routing_method_type(self) -> RoutingMethodType:
-        return (
-            RoutingMethodType.Renormalize
-            if not self.renormalize
-            else RoutingMethodType.RenormalizeNaive
+        return get_routing_method_type(
+            scoring_func=self.scoring_func,
+            top_k=self.top_k,
+            renormalize=self.renormalize,
+            num_expert_group=None,
+            has_e_score_bias=False,
         )
 
     def _compute_routing(

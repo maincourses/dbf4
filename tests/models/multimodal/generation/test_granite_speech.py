@@ -3,7 +3,6 @@
 
 from collections.abc import Sequence
 
-import os
 import pytest
 from transformers import AutoModelForSpeechSeq2Seq
 
@@ -14,7 +13,6 @@ from vllm.platforms import current_platform
 from ....conftest import AudioTestAssets, HfRunner, PromptAudioInput, VllmRunner
 from ...registry import HF_EXAMPLE_MODELS
 from ...utils import check_logprobs_close
-from ....utils import models_path_prefix
 
 HF_AUDIO_PROMPT = "<|start_of_role|>system<|end_of_role|>Knowledge Cutoff Date: April 2024.\nToday's Date: December 19, 2024.\nYou are Granite, developed by IBM. You are a helpful AI assistant<|end_of_text|>\n<|start_of_role|>user<|end_of_role|><|audio|>can you transcribe the speech into a written format?<|end_of_text|>\n<|start_of_role|>assistant<|end_of_role|>"  # noqa: E501
 
@@ -30,7 +28,7 @@ def vllm_to_hf_output(
     return output_ids, hf_output_str, out_logprobs
 
 
-MODEL_NAME = os.path.join(models_path_prefix, "ibm-granite/granite-speech-3.3-2b")
+MODEL_NAME = "ibm-granite/granite-speech-3.3-2b"
 # Audio lora co-exists directly in the model directory, but
 # currently still needs to be passed directly to vLLM.
 audio_lora_path = MODEL_NAME

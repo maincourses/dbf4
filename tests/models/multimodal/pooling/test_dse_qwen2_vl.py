@@ -3,7 +3,6 @@
 
 from collections.abc import Callable
 
-import os
 import pytest
 import torch
 import torch.nn.functional as F
@@ -11,7 +10,7 @@ from PIL import Image
 from transformers import Qwen2VLForConditionalGeneration
 
 from ....conftest import IMAGE_ASSETS, HfRunner, PromptImageInput, VllmRunner
-from ....utils import large_gpu_test, models_path_prefix
+from ....utils import large_gpu_test
 from ...utils import check_embeddings_close
 
 HF_TEXT_PROMPTS = [
@@ -34,7 +33,7 @@ HF_IMAGE_PROMPTS = IMAGE_ASSETS.prompts(
     }
 )
 
-MODELS = [os.path.join(models_path_prefix, "MrLight/dse-qwen2-2b-mrl-v1")]
+MODELS = ["MrLight/dse-qwen2-2b-mrl-v1"]
 
 
 def get_messages(image: Image.Image, text: str, embed_text: bool):

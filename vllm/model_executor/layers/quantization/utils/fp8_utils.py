@@ -29,11 +29,10 @@ from vllm.model_executor.parameter import (
     ChannelQuantScaleParameter,
     PerTensorScaleParameter,
 )
-from vllm.model_executor.utils import replace_parameter
+from vllm.model_executor.utils import replace_parameter, set_weight_attrs
 from vllm.platforms import current_platform
 from vllm.triton_utils import tl, triton
 from vllm.utils.deep_gemm import (
-    DeepGemmQuantScaleFMT,
     fp8_gemm_nt,
     get_tma_aligned_size,
     is_deep_gemm_e8m0_used,
@@ -47,8 +46,6 @@ from vllm.utils.flashinfer import (
     should_use_flashinfer_for_blockscale_fp8_gemm,
 )
 from vllm.utils.torch_utils import direct_register_custom_op
-from lmslim import quant_ops
-from lmslim.quantize.quant_ops import BlockSize
 
 logger = init_logger(__name__)
 
@@ -258,7 +255,7 @@ def _flashinfer_fp8_blockscale_gemm_impl(
 
     This batch-size-dependent selection is essential for maintaining model accuracy.
     Benchmarks on GSM8K show a significant accuracy gap (88% vs 95%) for DeepSeek-V3.1
-    when using FlashInfer's DeepGEMM on M>=32. The M < 32 strategy fixes the accurracy
+    when using FlashInfer's DeepGEMM on M>=32. The M < 32 strategy fixes the accuracy
     drop.
 
     Args:
@@ -359,21 +356,25 @@ class W8A8BlockFp8LinearOp:
         act_quant_group_shape: GroupShape,
         cutlass_block_fp8_supported: bool = CUTLASS_BLOCK_FP8_SUPPORTED,
         use_aiter_and_is_supported: bool = False,
-        use_blaslt: bool = False,
+        use_deep_gemm: bool | None = None,
     ):
         self.weight_group_shape = weight_group_shape
         self.act_quant_group_shape = act_quant_group_shape
-        self.is_deep_gemm_supported = is_deep_gemm_supported()
+        if use_deep_gemm is not None:
+            self.is_deep_gemm_supported = use_deep_gemm
+        else:
+            self.is_deep_gemm_supported = is_deep_gemm_supported()
         self.is_hopper = current_platform.is_device_capability(90)
         self.use_deep_gemm_e8m0 = is_deep_gemm_e8m0_used()
         self.is_flashinfer_supported = is_flashinfer_fp8_blockscale_gemm_supported()
+
         # Get the correct blockscale mul and input quant operations.
         # We can't use _dispatch_w8a8_blockscale_op to figure out if we want
         # to use deepgemm because we don't know the shape of weights (and
         # whether deepgemm supports it) at the init time.
         self.w8a8_blockscale_op, self.input_quant_op = (
             self._dispatch_w8a8_blockscale_op(
-                cutlass_block_fp8_supported, use_aiter_and_is_supported, use_blaslt
+                cutlass_block_fp8_supported, use_aiter_and_is_supported
             )
         )
         self.deepgemm_input_quant_op = (
@@ -399,14 +400,8 @@ class W8A8BlockFp8LinearOp:
         assert input_scale is None
         # View input as 2D matrix for fp8 methods
         input_2d = input.view(-1, input.shape[-1])
-        output_shape = []
+        output_shape = [*input.shape[:-1], weight.shape[0]]
         output_dtype = input.dtype
-        if envs.VLLM_W8A8_BACKEND == 3:
-            output_shape = [*input.shape[:-1], weight.shape[-1]]
-            out_features = int(weight.shape[-1])
-        else:
-            output_shape = [*input.shape[:-1], weight.shape[0]]
-            out_features = int(weight.shape[0])
 
         if should_use_flashinfer_for_blockscale_fp8_gemm(
             self.is_flashinfer_supported, output_dtype, input_2d, weight
@@ -421,7 +416,7 @@ class W8A8BlockFp8LinearOp:
             output = self._run_deepgemm(input_2d, weight, weight_scale)
         else:
             output = self.w8a8_blockscale_op(
-                out_features, input_2d, weight, weight_scale, input_scale
+                input_2d, weight, weight_scale, input_scale
             )
 
         if bias is not None:
@@ -434,15 +429,8 @@ class W8A8BlockFp8LinearOp:
         weight: torch.Tensor,
         weight_scale: torch.Tensor,
     ) -> torch.Tensor:
-        if DeepGemmQuantScaleFMT.from_oracle() == DeepGemmQuantScaleFMT.UE8M0:
-            q_input, input_scale = per_token_group_quant_fp8_packed_for_deepgemm(
-                input_2d,
-                group_size=self.act_quant_group_shape.col,
-                use_ue8m0=True,
-            )
-        else:
-            assert self.deepgemm_input_quant_op is not None
-            q_input, input_scale = self.deepgemm_input_quant_op(input_2d)
+        assert self.deepgemm_input_quant_op is not None
+        q_input, input_scale = self.deepgemm_input_quant_op(input_2d)
         output = torch.empty(
             (q_input.shape[0], weight.shape[0]),
             dtype=torch.bfloat16,
@@ -505,15 +493,8 @@ class W8A8BlockFp8LinearOp:
 
         if input_scale is not None:
             q_input = input_2d
-        elif use_triton:
-            q_input, input_scale = torch.ops.vllm.triton_per_token_group_quant_fp8(
-                input_2d,
-                self.act_quant_group_shape.col,
-            )
         else:
-            q_input, input_scale = rocm_aiter_ops.group_fp8_quant(
-                input_2d, self.act_quant_group_shape.col
-            )
+            q_input, input_scale = self.input_quant_op(input_2d, use_triton=use_triton)
 
         return gemm_a8w8_blockscale_op(
             q_input,
@@ -526,7 +507,6 @@ class W8A8BlockFp8LinearOp:
 
     def _run_triton(
         self,
-        out_features: int,
         input_2d: torch.Tensor,
         weight: torch.Tensor,
         weight_scale: torch.Tensor,
@@ -543,37 +523,6 @@ class W8A8BlockFp8LinearOp:
             list(self.weight_group_shape),
             input_2d.dtype,
         )
-
-    def _run_hipblaslt_blockwise(
-        self,
-        out_features: int,
-        input_2d: torch.Tensor,
-        weight: torch.Tensor,
-        weight_scale: torch.Tensor,
-        input_scale: torch.Tensor | None = None,
-    ) -> torch.Tensor:
-
-        m, k = input_2d.shape
-        n = out_features
-
-        if input_scale is None:
-            q_input, input_scale = self.input_quant_op(input_2d)
-        else:
-            q_input = input_2d
-
-        enum_block_size = BlockSize.block_128x128
-        if hasattr(self, "block_size") and self.block_size[0] == 64:
-            enum_block_size = BlockSize.block_64x64
-        output = hipblaslt_w8a8_block_fp8_matmul(
-            A=q_input,
-            B=weight,
-            As=input_scale,
-            Bs=weight_scale,
-            block_size=enum_block_size,
-            output_dtype=torch.bfloat16,
-        )
-
-        return output
 
     def _run_flashinfer(
         self,
@@ -602,7 +551,6 @@ class W8A8BlockFp8LinearOp:
         self,
         use_cutlass: bool,
         use_aiter_and_is_supported: bool,
-        use_blaslt: bool,
     ) -> tuple[
         Callable[
             [
@@ -613,7 +561,7 @@ class W8A8BlockFp8LinearOp:
             ],
             torch.Tensor,
         ],
-        QuantFP8 | None,
+        QuantFP8,
     ]:
         if use_cutlass:
             return self._run_cutlass, (
@@ -625,16 +573,11 @@ class W8A8BlockFp8LinearOp:
                 )
             )
         if use_aiter_and_is_supported:
-            return self._run_aiter, None
-        if envs.VLLM_W8A8_BACKEND == 3 or use_blaslt:
-            return (
-                self._run_hipblaslt_blockwise, 
-                QuantFP8(
-                    False,
-                    self.act_quant_group_shape,
-                    column_major_scales=False,
-                    use_ue8m0=False,
-                ),
+            return self._run_aiter, QuantFP8(
+                False,
+                self.act_quant_group_shape,
+                column_major_scales=False,
+                use_ue8m0=False,
             )
         return self._run_triton, (
             QuantFP8(
@@ -915,37 +858,6 @@ def _per_token_group_quant_fp8_colmajor(
     tl.store(y_s_ptr, y_s)
 
 
-def _lightop_per_token_group_quant_fp8_impl(
-    x_q: torch.Tensor,
-    x: torch.Tensor,
-    x_s: torch.Tensor,
-    group_size: int,
-    eps: float,
-    use_ue8m0: bool,
-) -> None:
-    from lightop import op
-    op.per_token_group_quant_fp8(x_q, x, x_s, group_size, eps, use_ue8m0)
-
-
-def _lightop_per_token_group_quant_fp8_fake(
-    x_q: torch.Tensor,
-    x: torch.Tensor,
-    x_s: torch.Tensor,
-    group_size: int,
-    eps: float,
-    use_ue8m0: bool,
-) -> None:
-    pass
-
-
-direct_register_custom_op(
-    "lightop_per_token_group_quant_fp8",
-    _lightop_per_token_group_quant_fp8_impl,
-    mutates_args=["x_q", "x_s"],
-    fake_impl=_lightop_per_token_group_quant_fp8_fake,
-)
-
-
 def per_token_group_quant_fp8(
     x: torch.Tensor,
     group_size: int,
@@ -1011,16 +923,21 @@ def per_token_group_quant_fp8(
     else:
         shape = x.shape[:-1] + (x.shape[-1] // group_size,)
         x_s = torch.empty(shape, device=x.device, dtype=torch.float32)
-    
-    if envs.USE_LIGHTOP_PER_TOKEN_GROUP_QUANT_FP8 and not column_major_scales:
-        torch.ops.vllm.lightop_per_token_group_quant_fp8(x_q, x, x_s, group_size, eps, use_ue8m0)
-        return x_q, x_s
-    
+
     # prefer CUDA kernel if available
     # TODO(bnell): this causes some fp8 moe test to fail.
     if current_platform.is_cuda() and x.is_contiguous():
         torch.ops._C.per_token_group_fp8_quant(
-            x, x_q, x_s, group_size, eps, fp8_min, fp8_max, use_ue8m0
+            x,
+            x_q,
+            x_s,
+            group_size,
+            eps,
+            fp8_min,
+            fp8_max,
+            use_ue8m0,
+            column_major_scales,
+            tma_aligned_scales,
         )
         return x_q, x_s
 
@@ -1265,19 +1182,6 @@ def get_w8a8_block_fp8_configs(
     )
     return None
 
-def hipblaslt_w8a8_block_fp8_matmul(
-    A: torch.Tensor,
-    B: torch.Tensor,
-    As: torch.Tensor,
-    Bs: torch.Tensor,
-    block_size: BlockSize,
-    output_dtype: torch.dtype = torch.float16,
-) -> torch.Tensor:
-    assert A.shape[1] == B.shape[0]
-    m, k = A.shape
-    _, n = B.shape
-    _, d = quant_ops.hipblaslt_w8a8_blockwise_gemm(A, B, As, Bs, m, n, k, 'NN', output_dtype, block_size, None)
-    return d
 
 def w8a8_triton_block_scaled_mm(
     A: torch.Tensor,
@@ -1507,7 +1411,7 @@ def _maybe_pad_fp8_weight(weight: torch.Tensor) -> torch.Tensor:
         import torch.nn.functional as F
 
         weight = F.pad(weight, (0, num_pad), "constant", 0)[..., :-num_pad]
-        torch.cuda.empty_cache()
+        torch.accelerator.empty_cache()
     return weight
 
 
@@ -1619,6 +1523,7 @@ def create_fp8_scale_parameter(
         raise ValueError(f"Unknown parameter type: {parameter_type}")
 
     scale[:] = torch.finfo(torch.float32).min
+    set_weight_attrs(scale, {"scale_type": "weight_scale"})
     return scale
 
 
@@ -1696,11 +1601,7 @@ def process_fp8_weight_block_strategy(
             weight=weight, weight_scale=weight_scale
         )
 
-    if envs.VLLM_W8A8_BACKEND == 3:
-        weight = weight.T.contiguous()
-        weight_scale = weight_scale.T.contiguous()
-    else:
-        weight = _maybe_pad_fp8_weight(weight)
+    weight = _maybe_pad_fp8_weight(weight)
     return weight, weight_scale
 
 

@@ -2,17 +2,15 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 """Tests for Llama4's multimodal preprocessing kwargs."""
 
-import os
 import pytest
 
 from vllm.multimodal import MULTIMODAL_REGISTRY
 
 from ....conftest import ImageTestAssets
 from ...utils import build_model_context
-from ....utils import models_path_prefix
 
 
-@pytest.mark.parametrize("model_id", [os.path.join(models_path_prefix, "meta-llama/Llama-4-Scout-17B-16E-Instruct")])
+@pytest.mark.parametrize("model_id", ["meta-llama/Llama-4-Scout-17B-16E-Instruct"])
 @pytest.mark.parametrize("mm_processor_kwargs", [{}])
 @pytest.mark.parametrize("num_imgs", [1, 5])
 @pytest.mark.parametrize("mm_processor_cache_gb", [0, 4])
@@ -51,7 +49,11 @@ def test_processor_override(
     if tokenized_prompt:
         prompt = tokenizer.encode(prompt)
 
-    processed_inputs = processor.apply(prompt, mm_data, mm_processor_kwargs)
+    processed_inputs = processor(
+        prompt,
+        mm_items=processor.info.parse_mm_data(mm_data),
+        hf_processor_mm_kwargs=mm_processor_kwargs,
+    )
     mm_data = processed_inputs["mm_kwargs"].get_data()
 
     # place holder replacements

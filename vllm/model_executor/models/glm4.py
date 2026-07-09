@@ -23,35 +23,39 @@
 # limitations under the License.
 """Inference-only GLM-4-0414 model compatible with HuggingFace weights."""
 
-import os
 from collections.abc import Iterable
 
 import torch
 from torch import nn
 from transformers import Glm4Config
 
-import vllm.envs as envs
-from vllm.attention.layer import Attention
 from vllm.compilation.decorators import support_torch_compile
 from vllm.config import CacheConfig, VllmConfig
 from vllm.distributed import get_pp_group, get_tensor_model_parallel_world_size
+from vllm.model_executor.layers.attention import Attention
 from vllm.model_executor.layers.layernorm import RMSNorm
 from vllm.model_executor.layers.linear import QKVParallelLinear, RowParallelLinear
 from vllm.model_executor.layers.logits_processor import LogitsProcessor
 from vllm.model_executor.layers.quantization import QuantizationConfig
 from vllm.model_executor.layers.rotary_embedding import get_rope
 from vllm.model_executor.layers.vocab_parallel_embedding import ParallelLMHead
+from vllm.model_executor.model_loader.weight_utils import (
+    default_weight_loader,
+    maybe_remap_kv_scale_name,
+)
 from vllm.sequence import IntermediateTensors
 from vllm.v1.attention.backend import AttentionType
 
 from .interfaces import SupportsLoRA, SupportsPP
 from .llama import LlamaMLP as Glm4MLP
 from .llama import LlamaModel
-from .utils import AutoWeightsLoader, PPMissingLayer, maybe_prefix
+from .utils import (
+    AutoWeightsLoader,
+    PPMissingLayer,
+    is_pp_missing_parameter,
+    maybe_prefix,
+)
 
-from vllm.utils import W8a8GetCacheJSON
-from vllm import _custom_ops as ops
-from vllm.model_executor.utils import pad_weight, gemm_bank_conf
 
 class Glm4Attention(nn.Module):
     def __init__(
@@ -85,7 +89,12 @@ class Glm4Attention(nn.Module):
             assert tp_size % self.total_num_kv_heads == 0
 
         rope_params = getattr(config, "rope_parameters", None)
-        config.rope_parameters.setdefault("partial_rotary_factor", 0.5)
+        if isinstance(rope_params, dict) and "partial_rotary_factor" in rope_params:
+            config.rope_parameters.setdefault(
+                "partial_rotary_factor", rope_params["partial_rotary_factor"]
+            )
+        else:
+            config.rope_parameters.setdefault("partial_rotary_factor", 0.5)
 
         self.num_kv_heads = max(1, self.total_num_kv_heads // tp_size)
         self.head_dim = head_dim or hidden_size // self.total_num_heads
@@ -228,6 +237,73 @@ class Glm4Model(LlamaModel):
             vllm_config=vllm_config, prefix=prefix, layer_type=Glm4DecoderLayer
         )
 
+    def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
+        stacked_params_mapping = [
+            # (param_name, shard_name, shard_id)
+            (".qkv_proj", ".q_proj", "q"),
+            (".qkv_proj", ".k_proj", "k"),
+            (".qkv_proj", ".v_proj", "v"),
+            (".gate_up_proj", ".gate_proj", 0),
+            (".gate_up_proj", ".up_proj", 1),
+        ]
+        params_dict = dict(self.named_parameters())
+        loaded_params: set[str] = set()
+        for name, loaded_weight in weights:
+            spec_layer = get_spec_layer_idx_from_weight_name(self.config, name)
+            if spec_layer is not None:
+                continue
+            if "rotary_emb.inv_freq" in name:
+                continue
+            if "rotary_emb.cos_cached" in name or "rotary_emb.sin_cached" in name:
+                # Models trained using ColossalAI may include these tensors in
+                # the checkpoint. Skip them.
+                continue
+            if self.quant_config is not None and (
+                scale_name := self.quant_config.get_cache_scale(name)
+            ):
+                # Loading kv cache quantization scales
+                param = params_dict[scale_name]
+                weight_loader = getattr(param, "weight_loader", default_weight_loader)
+                loaded_weight = (
+                    loaded_weight if loaded_weight.dim() == 0 else loaded_weight[0]
+                )
+                weight_loader(param, loaded_weight)
+                loaded_params.add(scale_name)
+                continue
+            if "scale" in name or "zero_point" in name:
+                # Remapping the name of FP8 kv-scale or zero point.
+                name = maybe_remap_kv_scale_name(name, params_dict)
+                if name is None:
+                    continue
+            for param_name, weight_name, shard_id in stacked_params_mapping:
+                if weight_name not in name:
+                    continue
+                name = name.replace(weight_name, param_name)
+                # Skip loading extra bias for GPTQ models.
+                if name.endswith(".bias") and name not in params_dict:
+                    continue
+
+                if is_pp_missing_parameter(name, self):
+                    continue
+
+                param = params_dict[name]
+                weight_loader = param.weight_loader
+                weight_loader(param, loaded_weight, shard_id)
+                break
+            else:
+                # Skip loading extra bias for GPTQ models.
+                if name.endswith(".bias") and name not in params_dict:
+                    continue
+
+                if is_pp_missing_parameter(name, self):
+                    continue
+
+                param = params_dict[name]
+                weight_loader = getattr(param, "weight_loader", default_weight_loader)
+                weight_loader(param, loaded_weight)
+            loaded_params.add(name)
+        return loaded_params
+
 
 class Glm4ForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
     packed_modules_mapping = {
@@ -272,25 +348,13 @@ class Glm4ForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
         self.make_empty_intermediate_tensors = (
             self.model.make_empty_intermediate_tensors
         )
-        self.quant_method = None
-        if quant_config is not None:
-            self.quant_method=quant_config.get_name()
-            self.quant_config=quant_config
-            
-        self.tritonsingleton= W8a8GetCacheJSON()      
-        self.use_llama_nn = os.environ.get('LLAMA_NN') == '1'
-        # self.use_lm_nn = os.environ.get('LM_NN') == '1'
-        self.use_gemm_pad = os.environ.get('GEMM_PAD') == '1'
-        self.use_fa_pad = os.environ.get('FA_PAD') == '1'
-        self.use_awq_pad = os.environ.get('AWQ_PAD') == '1'
-        self.w8a8_strategy = envs.VLLM_W8A8_BACKEND
 
     def embed_input_ids(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self.model.embed_input_ids(input_ids)
 
     def forward(
         self,
-        input_ids: torch.Tensor,
+        input_ids: torch.Tensor | None,
         positions: torch.Tensor,
         intermediate_tensors: IntermediateTensors | None = None,
         inputs_embeds: torch.Tensor | None = None,
@@ -313,3 +377,16 @@ class Glm4ForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
             skip_prefixes=(["lm_head."] if self.config.tie_word_embeddings else None),
         )
         return loader.load_weights(weights)
+
+
+def get_spec_layer_idx_from_weight_name(
+    config: Glm4Config, weight_name: str
+) -> int | None:
+    if hasattr(config, "num_nextn_predict_layers") and (
+        config.num_nextn_predict_layers > 0
+    ):
+        layer_idx = config.num_hidden_layers
+        for i in range(config.num_nextn_predict_layers):
+            if f"layers.{layer_idx + i}." in weight_name:
+                return layer_idx + i
+    return None

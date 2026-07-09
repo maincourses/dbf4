@@ -233,10 +233,6 @@ class BlockTable:
     def get_device_tensor(self, num_reqs: int) -> torch.Tensor:
         """Returns the device tensor of the block table."""
         return self.block_table.gpu[:num_reqs]
-    
-    def get_device_tensor_range(self, start_req: int, end_req: int) -> torch.Tensor:
-        """Returns the device tensor of the block table."""
-        return self.block_table.gpu[start_req:end_req]
 
     def get_cpu_tensor(self) -> torch.Tensor:
         """Returns the CPU tensor of the block table."""

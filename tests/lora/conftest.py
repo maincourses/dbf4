@@ -6,7 +6,6 @@ from collections import OrderedDict
 from unittest.mock import MagicMock
 
 import pytest
-import os
 import torch
 import torch.nn as nn
 from huggingface_hub import snapshot_download
@@ -25,7 +24,6 @@ from vllm.model_executor.layers.logits_processor import LogitsProcessor
 from vllm.model_executor.layers.vocab_parallel_embedding import ParallelLMHead
 from vllm.model_executor.models.interfaces import SupportsLoRA
 from vllm.platforms import current_platform
-from ..utils import models_path_prefix
 
 
 @pytest.fixture()
@@ -47,21 +45,24 @@ def cleanup_fixture(should_do_global_cleanup_after_test: bool):
 
 @pytest.fixture
 def dist_init():
+    from tests.utils import ensure_current_vllm_config
+
     temp_file = tempfile.mkstemp()[1]
 
     backend = "nccl"
     if current_platform.is_cpu() or current_platform.is_tpu():
         backend = "gloo"
 
-    init_distributed_environment(
-        world_size=1,
-        rank=0,
-        distributed_init_method=f"file://{temp_file}",
-        local_rank=0,
-        backend=backend,
-    )
-    initialize_model_parallel(1, 1)
-    yield
+    with ensure_current_vllm_config():
+        init_distributed_environment(
+            world_size=1,
+            rank=0,
+            distributed_init_method=f"file://{temp_file}",
+            local_rank=0,
+            backend=backend,
+        )
+        initialize_model_parallel(1, 1)
+        yield
     cleanup_dist_env_and_memory(shutdown_ray=True)
 
 
@@ -105,14 +106,14 @@ def dummy_model(default_vllm_config) -> nn.Module:
                 ("output", ColumnParallelLinear(50, 10)),
                 ("outact", nn.Sigmoid()),
                 # Special handling for lm_head & sampler
-                ("lm_head", ParallelLMHead(512, 10)),
-                ("logits_processor", LogitsProcessor(512)),
+                ("lm_head", ParallelLMHead(32064, 10)),
+                ("logits_processor", LogitsProcessor(32064)),
             ]
         )
     )
     model.config = MagicMock()
     model.embedding_modules = {"lm_head": "lm_head"}
-    model.unpadded_vocab_size = 32000
+    model.unpadded_vocab_size = 32064
     return model
 
 
@@ -138,8 +139,8 @@ def dummy_model_gate_up(default_vllm_config) -> nn.Module:
                 ("gate_up_proj", MergedColumnParallelLinear(50, [5, 5])),
                 ("outact", nn.Sigmoid()),
                 # Special handling for lm_head & sampler
-                ("lm_head", ParallelLMHead(512, 10)),
-                ("logits_processor", LogitsProcessor(512)),
+                ("lm_head", ParallelLMHead(32064, 10)),
+                ("logits_processor", LogitsProcessor(32064)),
             ]
         )
     )
@@ -151,7 +152,7 @@ def dummy_model_gate_up(default_vllm_config) -> nn.Module:
         ],
     }
     model.embedding_modules = {"lm_head": "lm_head"}
-    model.unpadded_vocab_size = 32000
+    model.unpadded_vocab_size = 32064
 
     return model
 
@@ -160,27 +161,23 @@ def dummy_model_gate_up(default_vllm_config) -> nn.Module:
 def mixtral_lora_files():
     # Note: this module has incorrect adapter_config.json to test
     # https://github.com/vllm-project/vllm/pull/5909/files.
-    # return snapshot_download(repo_id="SangBinCho/mixtral-lora")
-    return os.path.join(models_path_prefix, "SangBinCho/mixtral-lora")
+    return snapshot_download(repo_id="SangBinCho/mixtral-lora")
 
 
 @pytest.fixture(scope="session")
 def chatglm3_lora_files():
-    # return snapshot_download(repo_id="jeeejeee/chatglm3-text2sql-spider")
-    return os.path.join(models_path_prefix, "jeeejeee/chatglm3-text2sql-spider")
+    return snapshot_download(repo_id="jeeejeee/chatglm3-text2sql-spider")
 
 
 @pytest.fixture(scope="session")
 def baichuan_lora_files():
-    # return snapshot_download(repo_id="jeeejeee/baichuan7b-text2sql-spider")
-    return os.path.join(models_path_prefix, "jeeejeee/baichuan7b-text2sql-spider")
+    return snapshot_download(repo_id="jeeejeee/baichuan7b-text2sql-spider")
 
 
 @pytest.fixture(scope="session")
 def baichuan_zero_lora_files():
     # all the lora_B weights are initialized to zero.
-    # return snapshot_download(repo_id="jeeejeee/baichuan7b-zero-init")
-    return os.path.join(models_path_prefix, "jeeejeee/baichuan7b-zero-init")
+    return snapshot_download(repo_id="jeeejeee/baichuan7b-zero-init")
 
 
 @pytest.fixture(scope="session")
@@ -253,8 +250,7 @@ def qwen3_woofing_lora_files():
 
 @pytest.fixture(scope="session")
 def tinyllama_lora_files():
-    # return snapshot_download(repo_id="jashing/tinyllama-colorist-lora")
-    return os.path.join(models_path_prefix, "jashing/tinyllama-colorist-lora")
+    return snapshot_download(repo_id="jashing/tinyllama-colorist-lora")
 
 
 @pytest.fixture(scope="session")
@@ -291,6 +287,11 @@ def llama32_lora_huggingface_id():
 @pytest.fixture(scope="session")
 def llama32_lora_files(llama32_lora_huggingface_id):
     return snapshot_download(repo_id=llama32_lora_huggingface_id)
+
+
+@pytest.fixture(scope="session")
+def whisper_lora_files():
+    return snapshot_download(repo_id="chengyili2005/whisper-small-mandarin-lora")
 
 
 @pytest.fixture

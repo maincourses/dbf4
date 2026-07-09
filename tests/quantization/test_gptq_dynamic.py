@@ -5,7 +5,6 @@
 Run `pytest tests/quantization/test_gptq_dynamic.py --forked`.
 """
 
-import os
 import pytest
 import torch
 
@@ -15,8 +14,6 @@ from vllm.model_executor.layers.quantization.gptq_marlin import GPTQMarlinLinear
 from vllm.model_executor.layers.quantization.utils.gptq_utils import (
     get_dynamic_override,
 )
-
-from ..utils import models_path_prefix
 from vllm.platforms import current_platform
 
 PROMPT = "On the surface of Mars, we found"
@@ -26,11 +23,11 @@ PROMPT = "On the surface of Mars, we found"
 # All other layers (layer index >= 2) are not quantized
 MODEL_QUANT = [
     (
-        os.path.join(models_path_prefix, "ModelCloud/Qwen1.5-1.8B-Chat-GPTQ-4bits-dynamic-cfg-with-lm_head-symTrue"),
+        "ModelCloud/Qwen1.5-1.8B-Chat-GPTQ-4bits-dynamic-cfg-with-lm_head-symTrue",
         current_platform.is_cuda(),
     ),
     (
-        os.path.join(models_path_prefix, "ModelCloud/Qwen1.5-1.8B-Chat-GPTQ-4bits-dynamic-cfg-with-lm_head-symFalse"),
+        "ModelCloud/Qwen1.5-1.8B-Chat-GPTQ-4bits-dynamic-cfg-with-lm_head-symFalse",
         False,
     ),
 ]

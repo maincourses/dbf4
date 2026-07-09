@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
-import os
 import asyncio
 
 import pytest
@@ -12,7 +11,7 @@ from vllm.device_allocator.cumem import CuMemAllocator
 from vllm.platforms import current_platform
 from vllm.utils.mem_constants import GiB_bytes
 
-from ..utils import create_new_process_for_each_test, requires_fp8, models_path_prefix
+from ..utils import create_new_process_for_each_test, requires_fp8
 
 
 @create_new_process_for_each_test("fork" if not current_platform.is_rocm() else "spawn")
@@ -124,9 +123,9 @@ def test_cumem_with_cudagraph():
     "model",
     [
         # sleep mode with safetensors
-        os.path.join(models_path_prefix, "hmellor/tiny-random-LlamaForCausalLM"),
+        "hmellor/tiny-random-LlamaForCausalLM",
         # sleep mode with pytorch checkpoint
-        os.path.join(models_path_prefix, "facebook/opt-125m"),
+        "facebook/opt-125m",
     ],
 )
 def test_end_to_end(model: str):

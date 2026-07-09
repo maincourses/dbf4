@@ -5,7 +5,6 @@
 import dataclasses
 import importlib
 import sys
-import os
 
 import pytest
 import urllib3
@@ -13,11 +12,10 @@ import urllib3
 from vllm import LLM
 from vllm.distributed import cleanup_dist_env_and_memory
 from vllm.engine.arg_utils import EngineArgs
-from ...utils import models_path_prefix
 
 MODEL_CONFIGS = [
     {
-        "model": os.path.join(models_path_prefix, "facebook/opt-125m"),
+        "model": "facebook/opt-125m",
         "enforce_eager": True,
         "gpu_memory_utilization": 0.20,
         "max_model_len": 64,
@@ -26,7 +24,7 @@ MODEL_CONFIGS = [
         "tensor_parallel_size": 1,
     },
     {
-        "model": os.path.join(models_path_prefix, "Qwen/Qwen3-0.6B"),
+        "model": "Qwen/Qwen3-0.6B",
         "enforce_eager": True,
         "gpu_memory_utilization": 0.50,
         "max_model_len": 64,
@@ -36,7 +34,7 @@ MODEL_CONFIGS = [
         "tokenizer": "Qwen/Qwen3-4B",
     },
     {
-        "model": os.path.join(models_path_prefix, "mistralai/Mistral-7B-Instruct-v0.1"),
+        "model": "mistralai/Mistral-7B-Instruct-v0.1",
         "enforce_eager": True,
         "gpu_memory_utilization": 0.95,
         "max_model_len": 64,
@@ -47,7 +45,7 @@ MODEL_CONFIGS = [
     },
     # TODO: re-enable once these tests are run with V1
     # {
-    #     "model": os.path.join(models_path_prefix, "sentence-transformers/all-MiniLM-L12-v2"),
+    #     "model": "sentence-transformers/all-MiniLM-L12-v2",
     #     "enforce_eager": True,
     #     "gpu_memory_utilization": 0.20,
     #     "max_model_len": 64,
@@ -111,8 +109,15 @@ def _re_import_modules():
         if k.startswith("transformers") and not k.startswith("transformers_modules")
     ]
 
+    # These modules are aliased in Transformers v5 and so cannot be reloaded directly
+    aliased_modules = ["tokenization_utils", "tokenization_utils_fast"]
+
     reload_exception = None
     for module_name in hf_hub_module_names + transformers_module_names:
+        if any(module_name.endswith(f".{alias}") for alias in aliased_modules):
+            # Remove from sys.modules so they are re-aliased on next import
+            del sys.modules[module_name]
+            continue
         try:
             importlib.reload(sys.modules[module_name])
         except Exception as e:

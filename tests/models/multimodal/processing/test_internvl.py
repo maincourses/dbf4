@@ -4,7 +4,6 @@
 
 from collections.abc import Mapping
 
-import os
 import pytest
 from PIL import Image
 from transformers import PretrainedConfig
@@ -15,7 +14,6 @@ from vllm.multimodal.processing import BaseMultiModalProcessor
 
 from ....conftest import ImageTestAssets
 from ...utils import build_model_context
-from ....utils import models_path_prefix
 
 
 def _get_expected_num_patches(
@@ -68,7 +66,11 @@ def _run_check(
         for image in images
     )
 
-    processed_inputs = processor.apply(prompt, mm_data, mm_processor_kwargs)
+    processed_inputs = processor(
+        prompt,
+        mm_items=processor.info.parse_mm_data(mm_data),
+        hf_processor_mm_kwargs=mm_processor_kwargs,
+    )
 
     # Ensure we have the right number of placeholders per num_crops size
     image_token_id = tokenizer.convert_tokens_to_ids("<IMG_CONTEXT>")
@@ -79,7 +81,7 @@ def _run_check(
     assert pixel_shape[0] == total_expected_num_patches
 
 
-@pytest.mark.parametrize("model_id", os.path.join(models_path_prefix, "OpenGVLab/InternVL2-2B"))
+@pytest.mark.parametrize("model_id", ["OpenGVLab/InternVL2-2B"])
 @pytest.mark.parametrize(
     "size_factors",
     [

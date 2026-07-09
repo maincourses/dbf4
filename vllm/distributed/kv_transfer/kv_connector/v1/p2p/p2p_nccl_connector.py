@@ -2,9 +2,8 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any
 
-import os
 import regex as re
 import torch
 
@@ -77,7 +76,7 @@ class P2pNcclConnector(KVConnectorBase_V1):
         self,
         vllm_config: "VllmConfig",
         role: KVConnectorRole,
-        kv_cache_config: Optional["KVCacheConfig"] = None,
+        kv_cache_config: "KVCacheConfig | None" = None,
     ):
         super().__init__(
             vllm_config=vllm_config,
@@ -86,8 +85,6 @@ class P2pNcclConnector(KVConnectorBase_V1):
         )
         self._block_size = vllm_config.cache_config.block_size
         self._requests_need_load: dict[str, Any] = {}
-
-        self.config = vllm_config.kv_transfer_config
         self.is_producer = self._kv_transfer_config.is_kv_producer
         self.chunked_prefill: dict[str, tuple[list[int], list[int] | None]] = {}
 
@@ -106,41 +103,6 @@ class P2pNcclConnector(KVConnectorBase_V1):
             if role == KVConnectorRole.WORKER
             else None
         )
-        
-        self.parallel_config = vllm_config.parallel_config
-        self.model_config = vllm_config.model_config
-        self.total_num_hidden_layers = getattr(self.model_config.hf_text_config,
-                                              "num_hidden_layers", 0)
-        self.pp_size = self.parallel_config.pipeline_parallel_size
-        self.tp_size = self.parallel_config.tensor_parallel_size
-        self.num_card = self.pp_size * self.tp_size
-        self.multiple_machines = 1 if self.num_card > 8 else 0
-
-        if self.is_producer and self.multiple_machines == 1:
-            self.ip_map = {}
-            self.duplicate_keys = []
-            config_file = os.getenv('IP_CONFIG_FILE')
-            if not config_file:
-                print("Warning: Please set the IPVNet FILE environment variable for cross machine recognition of the second IP address")
-                return
-            try:
-                with open(config_file, 'r', encoding='utf-8') as file:
-                    for line_num, line in enumerate(file, 1):
-                        line = line.strip()
-                        if line and not line.startswith('#'):
-                            ips = line.split()
-                            if len(ips) == 2:
-                                first_ip, second_ip = ips
-                                if first_ip not in self.ip_map:
-                                    self.ip_map[first_ip] = second_ip
-                            else:
-                                print(f"warning: num {line_num} Incorrect format : {line}")
-            except Exception as e:
-                print(f"Error: Exception occurred while reading configuration file - {e}")
-
-
-    def get_ip_value(self, key):
-        return self.ip_map.get(key)
 
     # ==============================
     # Worker-side methods
@@ -199,7 +161,7 @@ class P2pNcclConnector(KVConnectorBase_V1):
                 None. The function modifies `layer` in-place.
             """
             if (
-                isinstance(attn_metadata, MLACommonMetadata) or all(isinstance(value, MLACommonMetadata) for value in attn_metadata.values()) or (not isinstance(layer, tuple))
+                isinstance(attn_metadata, MLACommonMetadata) or layer.shape[1] == 2
             ):  # MLA or FlashInfer
                 num_block = kv_cache.shape[0]
                 self.check_tensors_except_dim(layer, kv_cache, 0)
@@ -215,23 +177,13 @@ class P2pNcclConnector(KVConnectorBase_V1):
                         request_id,
                     )
 
-            # elif layer.shape[0] == 2:  # FlashAttention
-            else:
+            elif layer.shape[0] == 2:  # FlashAttention
                 num_block = kv_cache.shape[1]
-                # self.check_tensors_except_dim(layer, kv_cache, 1)
+                self.check_tensors_except_dim(layer, kv_cache, 1)
                 if len(block_ids) == num_block:
-                    # layer[:, block_ids, ...] = kv_cache
-                    #layer[:, block_ids, ...] = kv_cache
-                    k_ = kv_cache[0].permute(0, 2, 1, 3)
-                    v_ = kv_cache[1].permute(0, 2, 3, 1)
-                    layer[0][block_ids, ...] = k_
-                    layer[1][block_ids, ...] = v_
+                    layer[:, block_ids, ...] = kv_cache
                 else:
-                    # layer[:, block_ids[:num_block], ...] = kv_cache
-                    k_ = kv_cache[0].permute(0, 2, 1, 3)
-                    v_ = kv_cache[1].permute(0, 2, 3, 1)
-                    layer[0][block_ids[:num_block], ...] = k_
-                    layer[1][block_ids[:num_block], ...] = v_
+                    layer[:, block_ids[:num_block], ...] = kv_cache
                     logger.warning(
                         "🚧kv_cache does not match, block_ids:%d, "
                         "num_block:%d, request_id:%s",
@@ -275,17 +227,6 @@ class P2pNcclConnector(KVConnectorBase_V1):
                 inject_kv_into_layer(
                     layer, kv_cache, request.block_ids, request.request_id
                 )
-                tensor_id = request.request_id + "#" + layer_name
-                if tensor_id in self.p2p_nccl_engine.recv_store:
-                    tensor = self.p2p_nccl_engine.recv_store.pop(tensor_id, None)
-                    self.p2p_nccl_engine.send_request_id_to_tensor_ids.pop(
-                                request.request_id, None)
-                    self.p2p_nccl_engine.recv_request_id_to_tensor_ids.pop(
-                                request.request_id, None)
-                    addr = 0
-                    if isinstance(tensor, tuple):
-                        addr, _, _ = tensor
-                        self.p2p_nccl_engine.pool.free(addr)
 
     def wait_for_layer_load(self, layer_name: str) -> None:
         """Blocking until the KV for a specific layer is loaded into vLLM's
@@ -344,20 +285,12 @@ class P2pNcclConnector(KVConnectorBase_V1):
                 Returns None if the layout is unsupported.
             """
             if (
-                isinstance(attn_metadata, MLACommonMetadata) or not isinstance(layer, tuple)
+                isinstance(attn_metadata, MLACommonMetadata) or layer.shape[1] == 2
             ):  # MLA or FlashInfer
                 return layer[block_ids, ...]
 
-            # if layer.shape[0] == 2:  # FlashAttention
-            #     return layer[:, block_ids, ...]
-            else:
-                k = layer[0]  #(num_blocks, num_kv_heads, block_size, head_size)
-                v = layer[1]  #(num_blocks, num_kv_heads, head_size, block_size)
-
-                k = k.permute(0,2,1,3)
-                v = v.permute(0,3,1,2)
-                kv = torch.stack([k, v], dim=0).contiguous()
-                return kv[:, block_ids, ...]
+            if layer.shape[0] == 2:  # FlashAttention
+                return layer[:, block_ids, ...]
 
             return None
 
@@ -369,55 +302,14 @@ class P2pNcclConnector(KVConnectorBase_V1):
             remote_address = ip + ":" + str(port + self._rank)
 
             kv_cache = extract_kv_from_layer(kv_layer, request.block_ids)
-            # self.p2p_nccl_engine.send_tensor(
-            #     request_id + "#" + layer_name, kv_cache, remote_address
-            # )
-            pp_rank = (self.parallel_config.rank // self.parallel_config.tensor_parallel_size
-                   ) % self.parallel_config.pipeline_parallel_size
-            if (self.multiple_machines):
-                    ip_second = self.get_ip_value(ip)
-                    if (self.pp_size == 1):
-                        if self._rank < 8:
-                            self.p2p_nccl_engine.send_tensor(request_id + "#" + layer_name,
-                                                        kv_cache, remote_address)
-                            self.p2p_nccl_engine.send_tensor(request_id + "#" + layer_name,
-                                                        kv_cache, str(ip_second) + ":" + str(port + self._rank + 8))
-                    elif (self.pp_size == 2):
-                        if (pp_rank == 0):
-                            self.p2p_nccl_engine.send_tensor(request_id + "#" + layer_name,
-                                                    kv_cache, remote_address)
-                        else:
-                            self.p2p_nccl_engine.send_tensor(request_id + "#" + layer_name,
-                                                        kv_cache, str(ip_second) + ":" + str(port + self._rank))
-                    else:
-                        print("Error: only suppprt pp1 pp2 !!!!!!")
-            else:
-                if (self.pp_size == 1):
-                    self.p2p_nccl_engine.send_tensor(request_id + "#" + layer_name,
-                                                kv_cache, remote_address)
-                elif (self.pp_size == 2):
-                    if (pp_rank == 0):
-                        self.p2p_nccl_engine.send_tensor(request_id + "#" + layer_name,
-                                                    kv_cache, remote_address)
-                        self.p2p_nccl_engine.send_tensor(request_id + "#" + layer_name,
-                                                    kv_cache, ip + ":" + str(port + self._rank + 4))
-                    else:
-                        self.p2p_nccl_engine.send_tensor(request_id + "#" + layer_name,
-                                                    kv_cache, remote_address)
-                        self.p2p_nccl_engine.send_tensor(request_id + "#" + layer_name,
-                                                    kv_cache, ip + ":" + str(port + self._rank - 4))
-                elif (self.pp_size == 8):
-                    for i in range(8):
-                        self.p2p_nccl_engine.send_tensor(request_id + "#" + layer_name,
-                                                    kv_cache, ip + ":" + str(port + i))
-                else:
-                    print("Error: only suppprt pp1 pp2 pp8!!!!!!")
+            self.p2p_nccl_engine.send_tensor(
+                request_id + "#" + layer_name, kv_cache, remote_address
+            )
 
     def wait_for_save(self):
-        pass
-        # if self.is_producer:
-        #     assert self.p2p_nccl_engine is not None
-        #     self.p2p_nccl_engine.wait_for_sent()
+        if self.is_producer:
+            assert self.p2p_nccl_engine is not None
+            self.p2p_nccl_engine.wait_for_sent()
 
     def get_finished(
         self, finished_req_ids: set[str], **kwargs: Any
@@ -538,9 +430,7 @@ class P2pNcclConnector(KVConnectorBase_V1):
             if self.is_producer:
                 num_scheduled_tokens = scheduler_output.num_scheduled_tokens[req_id]
                 num_tokens = num_scheduled_tokens + num_computed_tokens
-                # assert req_id in self.chunked_prefill
-                if  req_id not in self.chunked_prefill:
-                    continue
+                assert req_id in self.chunked_prefill
                 assert new_block_ids is not None
                 block_ids = new_block_ids[0]
                 if not resumed_from_preemption:

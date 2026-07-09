@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
-import os
 import json
 from collections.abc import Generator
 
@@ -16,10 +15,9 @@ from vllm.entrypoints.openai.engine.protocol import (
 from vllm.tokenizers import TokenizerLike, get_tokenizer
 from vllm.tokenizers.detokenizer_utils import detokenize_incrementally
 from vllm.tool_parsers.xlam_tool_parser import xLAMToolParser
-from ..utils import models_path_prefix
 
 # Use a common model that is likely to be available
-MODEL = os.path.join(models_path_prefix, "Salesforce/Llama-xLAM-2-8B-fc-r")
+MODEL = "Salesforce/Llama-xLAM-2-8B-fc-r"
 
 
 @pytest.fixture(scope="module")

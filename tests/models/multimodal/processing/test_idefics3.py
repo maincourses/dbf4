@@ -1,18 +1,23 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 """Tests for Idefics3's multimodal preprocessing kwargs."""
-import os
+
 import pytest
+from packaging.version import Version
 from transformers import Idefics3Config
+from transformers import __version__ as TRANSFORMERS_VERSION
 
 from vllm.multimodal import MULTIMODAL_REGISTRY
 
 from ....conftest import ImageTestAssets
 from ...utils import build_model_context
-from ....utils import models_path_prefix
 
 
-@pytest.mark.parametrize("model_id", [os.path.join(models_path_prefix, "HuggingFaceM4/Idefics3-8B-Llama3")])
+@pytest.mark.skipif(
+    Version(TRANSFORMERS_VERSION) < Version("5.2.0"),
+    reason="See https://github.com/huggingface/transformers/pull/43948",
+)
+@pytest.mark.parametrize("model_id", ["HuggingFaceM4/Idefics3-8B-Llama3"])
 @pytest.mark.parametrize(
     ("mm_processor_kwargs", "expected_toks_per_img"),
     [
@@ -56,11 +61,19 @@ def test_processor_override(
     dummy_image = image_assets[0].pil_image.resize(dummy_image_size)
     mm_data = {"image": [dummy_image] * num_imgs}
 
-    processed_inputs = processor.apply(prompt, mm_data, hf_processor_mm_kwargs)
+    processed_inputs = processor(
+        prompt,
+        mm_items=processor.info.parse_mm_data(mm_data),
+        hf_processor_mm_kwargs=hf_processor_mm_kwargs,
+    )
 
     # Ensure the placeholders format are correct
     hf_processor = processor.info.get_hf_processor(**hf_processor_mm_kwargs)
-    hf_processed_inputs = hf_processor(text=prompt, images=mm_data["image"])
+    hf_processed_inputs = hf_processor(
+        text=prompt,
+        images=mm_data["image"],
+        **processor.info.ctx.get_merged_mm_kwargs(hf_processor_mm_kwargs),
+    )
     assert processed_inputs["prompt_token_ids"] == hf_processed_inputs["input_ids"][0]
 
     # Ensure we have the right number of placeholders per num_crops size

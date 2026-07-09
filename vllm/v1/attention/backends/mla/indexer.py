@@ -1,15 +1,18 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 from dataclasses import dataclass
-from typing import ClassVar
 
 import torch
 
 from vllm.config import VllmConfig
 from vllm.logger import init_logger
 from vllm.platforms import current_platform
+from vllm.utils.deep_gemm import (
+    get_paged_mqa_logits_metadata,
+    is_deep_gemm_supported,
+)
 from vllm.utils.math_utils import cdiv
-from vllm.utils.deep_gemm import get_paged_mqa_logits_metadata, is_deep_gemm_supported
+from vllm.utils.platform_utils import num_compute_units
 from vllm.v1.attention.backend import (
     AttentionBackend,
     AttentionCGSupport,
@@ -21,16 +24,13 @@ from vllm.v1.attention.backends.utils import (
     split_decodes_and_prefills,
     split_prefill_chunks,
 )
-from vllm.platforms import current_platform
+from vllm.v1.kv_cache_interface import AttentionSpec
 from vllm.v1.worker.cp_utils import get_total_cp_world_size
-from lightop import gemmopt
-
 
 logger = init_logger(__name__)
 
 
 class DeepseekV32IndexerBackend(AttentionBackend):
-    exclude_from_block_size_selection = True
     @staticmethod
     def get_name() -> str:
         return "DEEPSEEK_V32_INDEXER"
@@ -63,6 +63,9 @@ class DeepseekV32IndexerBackend(AttentionBackend):
         include_num_layers_dimension: bool = False,
     ) -> tuple[int, ...]:
         if include_num_layers_dimension:
+            # DeepseekV32Indexer kernels do not support cross-layer
+            # KV cache layout. Identity permutation keeps num_layers
+            # first, signaling incompatibility.
             return (0, 1, 2, 3)
         return (0, 1, 2)
 
@@ -92,6 +95,8 @@ class DeepSeekV32IndexerDecodeMetadata:
     decode_lens: torch.Tensor
     requires_padding: bool
     schedule_metadata: torch.Tensor
+    use_large_context_topk: bool
+    offsets: torch.Tensor | None  # Precomputed offsets for speculative decoding
 
 
 @dataclass
@@ -105,7 +110,6 @@ class DeepseekV32IndexerMetadata:
     max_seq_len: int
 
     num_actual_tokens: int  # Number of tokens excluding padding.
-    num_kv_actual_tokens: int 
     query_start_loc: torch.Tensor
     slot_mapping: torch.Tensor
     # The dimension of the attention heads
@@ -201,11 +205,23 @@ def get_max_prefill_buffer_size(vllm_config: VllmConfig):
 
 
 class DeepseekV32IndexerMetadataBuilder(AttentionMetadataBuilder):
-    _cudagraph_support: ClassVar[AttentionCGSupport] = (
-        AttentionCGSupport.UNIFORM_BATCH
-    )
-
     reorder_batch_threshold: int = 1
+    natively_supported_next_n: list[int] = [1, 2]
+    # TODO (matt): integrate kernel with next_n = 4 support
+
+    @classmethod
+    def get_cudagraph_support(
+        cls,
+        vllm_config: VllmConfig,
+        kv_cache_spec: AttentionSpec,
+    ) -> AttentionCGSupport:
+        if not is_deep_gemm_supported():
+            logger.warning_once(
+                "DeepGEMM is not available. Disabling CUDA graph support "
+                "for sparse attention indexer. This may reduce performance.",
+            )
+            return AttentionCGSupport.NEVER
+        return AttentionCGSupport.UNIFORM_BATCH
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -217,26 +233,23 @@ class DeepseekV32IndexerMetadataBuilder(AttentionMetadataBuilder):
             if self.vllm_config.speculative_config
             else 0
         )
-        # Now deepgemm fp8_paged_mqa_logits does not support next_n > 2
-        #self.reorder_batch_threshold += min(self.num_speculative_tokens, 1)
+        next_n = self.num_speculative_tokens + 1
         self.reorder_batch_threshold += self.num_speculative_tokens
+        self.use_flattening = next_n not in self.natively_supported_next_n
 
-        props = torch.cuda.get_device_properties(self.device)
-        sm_count = props.multi_processor_count
+        sm_count = num_compute_units(self.device.index)
         self.num_sms = sm_count
 
-        # self.decode_lens_buffer = torch.empty(
-        #     (scheduler_config.max_num_seqs,), dtype=torch.int32, device=self.device
-        # )
         self.decode_lens_buffer = torch.empty(
             (scheduler_config.max_num_batched_tokens,),
             dtype=torch.int32,
             device=self.device,
         )
-
-        # Pre-allocated buffers for flattening (spec decode).
+        self.offsets_buffer = torch.arange(
+            next_n, device=self.device, dtype=torch.int32
+        )
         self.arange_buffer = torch.arange(
-            scheduler_config.max_num_seqs * (1 + self.num_speculative_tokens),
+            scheduler_config.max_num_seqs * next_n,
             dtype=torch.int32,
             device=self.device,
         )
@@ -315,7 +328,9 @@ class DeepseekV32IndexerMetadataBuilder(AttentionMetadataBuilder):
         query_start_loc_cpu = common_attn_metadata.query_start_loc_cpu
         num_decodes, num_prefills, num_decode_tokens, num_prefill_tokens = (
             split_decodes_and_prefills(
-                common_attn_metadata, decode_threshold=self.reorder_batch_threshold
+                common_attn_metadata,
+                decode_threshold=self.reorder_batch_threshold,
+                require_uniform=not self.use_flattening,
             )
         )
 
@@ -364,10 +379,20 @@ class DeepseekV32IndexerMetadataBuilder(AttentionMetadataBuilder):
             block_table.clamp_(min=0)
 
             max_decode_len = int(decode_lens_cpu.max().item())
-            if max_decode_len > 1:
+            next_n = 1 + self.num_speculative_tokens
+            use_native = not self.use_flattening and max_decode_len == next_n
+
+            if use_native and next_n > 1:
+                offsets = self.offsets_buffer
+                batch_size = num_decodes
+            elif max_decode_len > 1:
                 # Flatten multi-token decode requests into single-token
                 # batch entries, expanding seq_lens and block tables so
                 # the kernel always sees next_n=1.
+
+                # Also handles the edge case where use_flattening=False
+                # but max_decode_len != next_n (e.g. a batch containing some
+                # short prefills (q_len < next_n) and no true decodes).
 
                 # Assume 4 requests with seq_lens [10, 7, 12, 0] (the final req is
                 # padding) and decode_lens [3, 1, 4, 0] in the below example comments.
@@ -384,8 +409,9 @@ class DeepseekV32IndexerMetadataBuilder(AttentionMetadataBuilder):
 
                 # [0, 3, 4, 8] -> [0, 0, 0, 3, 4, 4, 4, 4]
                 expanded_starts = torch.repeat_interleave(
-                    common_attn_metadata.query_start_loc[:num_decodes], decode_lens,
-                    output_size=actual_expanded
+                    common_attn_metadata.query_start_loc[:num_decodes],
+                    decode_lens,
+                    output_size=actual_expanded,
                 )
 
                 # [0, 1, 2, 0, 0, 1, 2, 3]
@@ -403,7 +429,9 @@ class DeepseekV32IndexerMetadataBuilder(AttentionMetadataBuilder):
                 # Give each of the flattened entries the same block table row as the
                 # original request.
                 self.expanded_block_table_buffer[:actual_expanded] = (
-                    torch.repeat_interleave(block_table, decode_lens, dim=0, output_size=actual_expanded)
+                    torch.repeat_interleave(
+                        block_table, decode_lens, dim=0, output_size=actual_expanded
+                    )
                 )
                 if actual_expanded < num_decode_tokens:
                     self.expanded_block_table_buffer[
@@ -414,16 +442,26 @@ class DeepseekV32IndexerMetadataBuilder(AttentionMetadataBuilder):
                 # All reqs now have decode_len=1
                 self.decode_lens_buffer[:num_decode_tokens] = 1
                 decode_lens = self.decode_lens_buffer[:num_decode_tokens]
+                offsets = None
+                batch_size = num_decode_tokens
+            else:
+                offsets = None
+                batch_size = num_decodes
 
             # DeepGEMM is required for the paged MQA logits on CUDA devices
-            if current_platform.is_rocm():
-                self.scheduler_metadata_buffer = gemmopt.get_paged_mqa_logits_metadata(
-                    seq_lens, self.kv_cache_spec.block_size, self.num_sms
-                )
-            else:
+            if current_platform.is_cuda() and is_deep_gemm_supported():
                 self.scheduler_metadata_buffer[:] = get_paged_mqa_logits_metadata(
-                    seq_lens, self.kv_cache_spec.block_size, self.num_sms
+                    seq_lens,
+                    self.kv_cache_spec.block_size,
+                    self.num_sms,
                 )
+
+            # Decide which top-k kernel to use based on batch size and sequence length
+            # Decision logic based on micro-benchmark results:
+            # - large_context_topk wins for batch <= 128 and seq_len > 8K
+            # - top_k_per_row_decode wins for batch > 128 or seq_len <= 8K
+            _is_large_context = common_attn_metadata.max_seq_len > 8192
+            use_large_context_topk = batch_size <= 128 and _is_large_context
 
             decode_metadata = DeepSeekV32IndexerDecodeMetadata(
                 block_table=block_table,
@@ -431,6 +469,8 @@ class DeepseekV32IndexerMetadataBuilder(AttentionMetadataBuilder):
                 decode_lens=decode_lens,
                 requires_padding=False,
                 schedule_metadata=self.scheduler_metadata_buffer,
+                use_large_context_topk=use_large_context_topk,
+                offsets=offsets,
             )
 
         attn_metadata = DeepseekV32IndexerMetadata(
@@ -439,7 +479,6 @@ class DeepseekV32IndexerMetadataBuilder(AttentionMetadataBuilder):
             max_query_len=common_attn_metadata.max_query_len,
             max_seq_len=common_attn_metadata.max_seq_len,
             num_actual_tokens=common_attn_metadata.num_actual_tokens,
-            num_kv_actual_tokens=common_attn_metadata.num_kv_actual_tokens,
             query_start_loc=common_attn_metadata.query_start_loc,
             slot_mapping=common_attn_metadata.slot_mapping,
             head_dim=128,

@@ -2,15 +2,12 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
 from copy import deepcopy
-
-import os
 from typing import Any
 
 from openai.types.chat import ChatCompletionMessageParam, ChatCompletionToolParam
 from typing_extensions import TypedDict
 
 from tests.utils import VLLM_PATH
-from ..utils import models_path_prefix
 
 
 class ServerConfig(TypedDict, total=False):
@@ -55,7 +52,7 @@ ARGS: list[str] = [
 
 CONFIGS: dict[str, ServerConfig] = {
     "hermes": {
-        "model": os.path.join(models_path_prefix, "NousResearch/Hermes-3-Llama-3.1-8B"),
+        "model": "NousResearch/Hermes-3-Llama-3.1-8B",
         "arguments": [
             "--enforce-eager",
             "--no-enable-prefix-caching",
@@ -71,7 +68,7 @@ CONFIGS: dict[str, ServerConfig] = {
         "to the user's question - just respond to it normally.",
     },
     "llama": {
-        "model": os.path.join(models_path_prefix, "meta-llama/Meta-Llama-3.1-8B-Instruct"),
+        "model": "meta-llama/Meta-Llama-3.1-8B-Instruct",
         "arguments": [
             "--enforce-eager",
             "--no-enable-prefix-caching",
@@ -83,7 +80,7 @@ CONFIGS: dict[str, ServerConfig] = {
         "supports_parallel": False,
     },
     "llama3.2": {
-        "model": os.path.join(models_path_prefix, "meta-llama/Llama-3.2-3B-Instruct"),
+        "model": "meta-llama/Llama-3.2-3B-Instruct",
         "arguments": [
             "--enforce-eager",
             "--no-enable-prefix-caching",
@@ -95,7 +92,7 @@ CONFIGS: dict[str, ServerConfig] = {
         "supports_parallel": False,
     },
     "llama4": {
-        "model": os.path.join(models_path_prefix, "meta-llama/Llama-4-Scout-17B-16E-Instruct"),
+        "model": "meta-llama/Llama-4-Scout-17B-16E-Instruct",
         "arguments": [
             "--enforce-eager",
             "--no-enable-prefix-caching",
@@ -110,7 +107,7 @@ CONFIGS: dict[str, ServerConfig] = {
         "extended": True,
     },
     "llama4_json": {
-        "model": os.path.join(models_path_prefix, "meta-llama/Llama-4-Scout-17B-16E-Instruct"),
+        "model": "meta-llama/Llama-4-Scout-17B-16E-Instruct",
         "arguments": [
             "--enforce-eager",
             "--no-enable-prefix-caching",
@@ -127,7 +124,7 @@ CONFIGS: dict[str, ServerConfig] = {
         "extended": True,
     },
     "mistral-7b": {
-        "model": os.path.join(models_path_prefix, "mistralai/Mistral-7B-Instruct-v0.3"),
+        "model": "mistralai/Mistral-7B-Instruct-v0.3",
         "arguments": [
             "--enforce-eager",
             "--no-enable-prefix-caching",
@@ -193,7 +190,7 @@ CONFIGS: dict[str, ServerConfig] = {
     #     "supports_rocm": False,
     # },
     "granite-3.0-8b": {
-        "model": os.path.join(models_path_prefix, "ibm-granite/granite-3.0-8b-instruct"),
+        "model": "ibm-granite/granite-3.0-8b-instruct",
         "arguments": [
             "--enforce-eager",
             "--no-enable-prefix-caching",
@@ -204,7 +201,7 @@ CONFIGS: dict[str, ServerConfig] = {
         ],
     },
     "granite-3.1-8b": {
-        "model": os.path.join(models_path_prefix, "ibm-granite/granite-3.1-8b-instruct"),
+        "model": "ibm-granite/granite-3.1-8b-instruct",
         "arguments": [
             "--enforce-eager",
             "--no-enable-prefix-caching",
@@ -214,7 +211,7 @@ CONFIGS: dict[str, ServerConfig] = {
         "supports_parallel": True,
     },
     "internlm": {
-        "model": os.path.join(models_path_prefix, "internlm/internlm2_5-7b-chat"),
+        "model": "internlm/internlm2_5-7b-chat",
         "arguments": [
             "--enforce-eager",
             "--no-enable-prefix-caching",
@@ -227,7 +224,7 @@ CONFIGS: dict[str, ServerConfig] = {
         "supports_parallel": False,
     },
     "toolACE": {
-        "model": os.path.join(models_path_prefix, "Team-ACE/ToolACE-8B"),
+        "model": "Team-ACE/ToolACE-8B",
         "arguments": [
             "--enforce-eager",
             "--no-enable-prefix-caching",

@@ -30,7 +30,6 @@ from vllm.model_executor.model_loader.tensorizer_loader import (
 from vllm.utils.import_utils import PlaceholderModule
 
 from .conftest import DummyExecutor, assert_from_collective_rpc
-from ..utils import models_path_prefix
 
 try:
     import tensorizer
@@ -179,7 +178,7 @@ def test_load_without_tensorizer_load_format(vllm_runner, capfd, model_ref):
     finally:
         del model
         gc.collect()
-        torch.cuda.empty_cache()
+        torch.accelerator.empty_cache()
 
 
 def test_raise_value_error_on_invalid_load_format(vllm_runner, capfd, model_ref):
@@ -201,15 +200,14 @@ def test_raise_value_error_on_invalid_load_format(vllm_runner, capfd, model_ref)
     finally:
         del model
         gc.collect()
-        torch.cuda.empty_cache()
+        torch.accelerator.empty_cache()
 
 
-@pytest.mark.skipif(torch.cuda.device_count() < 2, reason="Requires 2 GPUs")
+@pytest.mark.skipif(torch.accelerator.device_count() < 2, reason="Requires 2 GPUs")
 def test_tensorizer_with_tp_path_without_template(vllm_runner, capfd):
     try:
-        model_ref = os.path.join(models_path_prefix, "EleutherAI/pythia-1.4b")
-        # tensorized_path = f"s3://tensorized/{model_ref}/fp16/model.tensors"
-        tensorized_path = f"{model_ref}/fp16/model.tensors"
+        model_ref = "EleutherAI/pythia-1.4b"
+        tensorized_path = f"s3://tensorized/{model_ref}/fp16/model.tensors"
 
         vllm_runner(
             model_ref,
@@ -233,11 +231,11 @@ def test_tensorizer_with_tp_path_without_template(vllm_runner, capfd):
         ) in combined_output
 
 
-@pytest.mark.skipif(torch.cuda.device_count() < 2, reason="Requires 2 GPUs")
+@pytest.mark.skipif(torch.accelerator.device_count() < 2, reason="Requires 2 GPUs")
 def test_deserialized_encrypted_vllm_model_with_tp_has_same_outputs(
     vllm_runner, tmp_path
 ):
-    model_ref = os.path.join(models_path_prefix, "EleutherAI/pythia-1.4b")
+    model_ref = "EleutherAI/pythia-1.4b"
     # record outputs from un-sharded un-tensorized model
     with vllm_runner(
         model_ref,
@@ -285,8 +283,7 @@ def test_vllm_tensorized_model_has_same_outputs(
     model_ref, vllm_runner, tmp_path, model_path
 ):
     gc.collect()
-    torch.cuda.empty_cache()
-
+    torch.accelerator.empty_cache()
     config = TensorizerConfig(tensorizer_uri=str(model_path))
     args = EngineArgs(model=model_ref)
 

@@ -215,11 +215,7 @@ __device__ bool processHistogramStep(
 
     // Compute the prefix sum.
     int prefixSum{0}, totalSum{0};
-    #ifndef USE_ROCM
-      using Scan = cub::BlockScan<int, kNumThreadsPerBlock>;
-    #else:
-      using Scan = hipcub::BlockScan<int, kNumThreadsPerBlock>;
-    #endif
+    using Scan = cub::BlockScan<int, kNumThreadsPerBlock>;
     Scan(smemFinal.histo.scan).ExclusiveSum(binCount, prefixSum, totalSum);
 
     // Update the histogram with the prefix sums.
@@ -338,22 +334,13 @@ static __device__ void topKPerRowJob(const int* indices, const float* logits,
   static constexpr int kNumFinalItemsPerThread =
       kNumFinalItems / kNumThreadsPerBlock;
   // The class to sort the elements during the final pass.
-  #ifndef USE_ROCM
-    using FinalSort = cub::BlockRadixSort<float, kNumThreadsPerBlock,
-                                          kNumFinalItemsPerThread, int>;
-  #else
-    using FinalSort = hipcub::BlockRadixSort<float, kNumThreadsPerBlock,
-                                          kNumFinalItemsPerThread, int>;
-  #endif
-
+  using FinalSort = cub::BlockRadixSort<float, kNumThreadsPerBlock,
+                                        kNumFinalItemsPerThread, int>;
   using FinalSortTempStorage =
       std::conditional_t<useRadixSort, typename FinalSort::TempStorage, int>;
   // The class to compute the inclusive prefix-sum over the histogram.
-  #ifndef USE_ROCM
-    using Scan = cub::BlockScan<int, kNumThreadsPerBlock>;
-  #else
-    using Scan = hipcub::BlockScan<int, kNumThreadsPerBlock>;
-  #endif
+  using Scan = cub::BlockScan<int, kNumThreadsPerBlock>;
+
   // The structure to store the final items (for the final pass).
   struct FinalItems {
     // Shared memory to store the indices for the final pass.
@@ -588,7 +575,7 @@ static __global__ __launch_bounds__(kNumThreadsPerBlock) void topKPerRowDecode(
   // The range of logits within the row.
   int rowStart = 0;
   int seq_len = seqLens[rowIdx / next_n];
-  int rowEnd = seq_len - next_n + (rowIdx % next_n) + 1;
+  int rowEnd = max(0, seq_len - next_n + (rowIdx % next_n) + 1);
 
   // Local pointers to this block
   if constexpr (!multipleBlocksPerRow && !mergeBlocks) {

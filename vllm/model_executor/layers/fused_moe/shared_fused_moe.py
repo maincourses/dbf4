@@ -8,7 +8,6 @@ from vllm.distributed import (
     tensor_model_parallel_all_reduce,
 )
 from vllm.model_executor.layers.fused_moe.layer import FusedMoE
-from vllm import envs
 
 
 # TODO(bnell): Add shared + fused combo function? e.g. +
@@ -19,65 +18,14 @@ class SharedFusedMoE(FusedMoE):
     can be interleaved with the fused all2all dispatch communication step.
     """
 
-    def __init__(
-        self,
-        shared_experts: torch.nn.Module | None,
-        gate: torch.nn.Module | None = None,
-        use_overlapped: bool = True,
-        **kwargs,
-    ):
-        super().__init__(**kwargs)
-        self._shared_experts = shared_experts
-
-        # Disable shared expert overlap if:
-        #   - we are using eplb with non-default backend, because of correctness issues
-        #   - we are using flashinfer with DP, since there nothint to gain
-        #   - we are using marlin kernels
-        backend = self.moe_parallel_config.all2all_backend
-        self.use_overlapped = (
-            use_overlapped
-            and not (
-                (self.enable_eplb and backend != "allgather_reducescatter")
-                or (self.moe_config.use_flashinfer_cutlass_kernels and self.dp_size > 1)
-            )
-            and self._shared_experts is not None
-        )
-
-        self._gate = gate
-
-    @property
-    def shared_experts(self) -> torch.nn.Module | None:
-        return self._shared_experts if self.use_overlapped else None
-
-    @property
-    def gate(self) -> torch.nn.Module | None:
-        return self._gate if self.use_overlapped else None
-
-    @property
-    def is_internal_router(self) -> bool:
-        return self.gate is not None
-
     def forward(
         self,
         hidden_states: torch.Tensor,
         router_logits: torch.Tensor,
-        *,
-        iqis: tuple[torch.Tensor, torch.Tensor] | None = None,
-        shared_output: torch.Tensor | None = None,
-        routed_scaling_factor: float = 1.0,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         if not self.use_overlapped:
-            if shared_output is not None:
-                shared_out = shared_output
-            elif self._shared_experts is not None:
-                if envs.USE_FUSED_RMS_QUANT and iqis is not None:
-                    assert iqis[0] is not None
-                    assert iqis[1] is not None
-                    shared_out = self._shared_experts(hidden_states,
-                    i_q=iqis[0],
-                    i_s=iqis[1])
-                else:
-                    shared_out = self._shared_experts(hidden_states)
+            if self._shared_experts is not None:
+                shared_out = self._shared_experts(hidden_states)
 
                 # Reduce shared expert outputs if necessary, since the MLP
                 # should have been created with reduce_results=False.
@@ -90,43 +38,15 @@ class SharedFusedMoE(FusedMoE):
             else:
                 shared_out = None
 
-            if envs.USE_FUSED_RMS_QUANT and iqis is not None:
-                assert iqis[0] is not None
-                assert iqis[1] is not None
-                fused_out = super().forward(
-                    hidden_states=hidden_states,
-                    router_logits=router_logits,
-                    i_q=iqis[0],
-                    i_s=iqis[1],
-                    shared_output=shared_output,
-                    routed_scaling_factor=routed_scaling_factor,
-                )
-            else:
-                fused_out = super().forward(
-                    hidden_states=hidden_states,
-                    router_logits=router_logits,
-                    shared_output=shared_output,
-                    routed_scaling_factor=routed_scaling_factor,
-                )
+            fused_out = super().forward(
+                hidden_states=hidden_states,
+                router_logits=router_logits,
+            )
         else:
-            if envs.USE_FUSED_RMS_QUANT and iqis is not None:
-                assert iqis[0] is not None
-                assert iqis[1] is not None
-                shared_out, fused_out = super().forward(
-                    hidden_states=hidden_states,
-                    router_logits=router_logits,
-                    i_q=iqis[0],
-                    i_s=iqis[1],
-                    shared_output=shared_output,
-                    routed_scaling_factor=routed_scaling_factor,
-                )
-            else:
-                shared_out, fused_out = super().forward(
-                    hidden_states=hidden_states,
-                    router_logits=router_logits,
-                    shared_output=shared_output,
-                    routed_scaling_factor=routed_scaling_factor,
-                )
+            shared_out, fused_out = super().forward(
+                hidden_states=hidden_states,
+                router_logits=router_logits,
+            )
             # ensure early TP reduction of shared expert outputs when required
             if (
                 shared_out is not None

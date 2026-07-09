@@ -1,17 +1,16 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 """Tests for phi4mm's multimodal preprocessing kwargs."""
-import os
+
 import pytest
 
 from vllm.multimodal import MULTIMODAL_REGISTRY
 
 from ....conftest import ImageTestAssets
 from ...utils import build_model_context
-from ....utils import models_path_prefix
 
 
-@pytest.mark.parametrize("model_id", [os.path.join(models_path_prefix, "microsoft/Phi-4-multimodal-instruct")])
+@pytest.mark.parametrize("model_id", ["microsoft/Phi-4-multimodal-instruct"])
 @pytest.mark.parametrize(
     ("mm_processor_kwargs", "expected_toks_per_img"),
     [
@@ -52,7 +51,11 @@ def test_processor_override(
     dummy_image = image_assets[0].pil_image.resize(dummy_image_size)
     mm_data = {"image": [dummy_image] * num_imgs}
 
-    processed_inputs = processor.apply(prompt, mm_data, hf_processor_mm_kwargs)
+    processed_inputs = processor(
+        prompt,
+        mm_items=processor.info.parse_mm_data(mm_data),
+        hf_processor_mm_kwargs=hf_processor_mm_kwargs,
+    )
 
     # Ensure we have the right number of placeholders per num_crops size
     img_tok_count = processed_inputs["prompt_token_ids"].count(

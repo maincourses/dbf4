@@ -3,14 +3,9 @@
 
 import os
 import time
-import queue
-from collections import defaultdict, deque
-from collections.abc import Callable, Sequence
-from concurrent.futures import Future, InvalidStateError
-from typing import TYPE_CHECKING, Union, Any
-from threading import Thread
-from enum import Enum, auto
-from contextlib import suppress
+from collections import defaultdict
+from concurrent.futures import Future
+from typing import TYPE_CHECKING, Union
 
 import vllm.platforms
 from vllm.config import ParallelConfig
@@ -21,6 +16,7 @@ from vllm.platforms import current_platform
 from vllm.sequence import IntermediateTensors
 from vllm.utils.network_utils import get_ip
 from vllm.v1.outputs import AsyncModelRunnerOutput
+from vllm.v1.serial_utils import run_method
 from vllm.v1.worker.worker_base import WorkerWrapperBase
 
 if TYPE_CHECKING:
@@ -33,7 +29,6 @@ PG_WAIT_TIMEOUT = 1800
 try:
     import ray
     from ray.util import placement_group_table
-    from ray.util.queue import Queue as RayQueue
     from ray.util.placement_group import PlacementGroup
 
     try:
@@ -48,7 +43,7 @@ try:
         """Ray wrapper for vllm.worker.Worker, allowing Worker to be
         lazily initialized after Ray sets CUDA_VISIBLE_DEVICES."""
 
-        def __init__(self, use_async_scheduling: bool, response_mq: RayQueue, *args, **kwargs) -> None: # type: ignore
+        def __init__(self, *args, **kwargs) -> None:
             super().__init__(*args, **kwargs)
             # Since the compiled DAG runs a main execution
             # in a different thread that calls cuda.set_device.
@@ -56,21 +51,28 @@ try:
             # that thread.
             self.compiled_dag_cuda_device_set = False
 
-            # async scheduling
-            self.use_async_scheduling = use_async_scheduling
-            self.worker_response_mq = response_mq
-            if self.use_async_scheduling:
-                self.async_output_queue: queue.Queue = queue.Queue()
-                self.async_output_copy_thread = Thread(
-                    target=self.async_output_busy_loop,
-                    daemon=True,
-                    name="WorkerAsyncOutputCopy",
-                )
-                self.async_output_copy_thread.start()
+        def adjust_rank(self, rank_mapping: dict[int, int]) -> None:
+            """
+            Adjust the rpc_rank based on the given mapping.
+            It is only used during the initialization of the executor,
+            to adjust the rpc_rank of workers after we create all workers.
+            """
+            if self.rpc_rank in rank_mapping:
+                self.rpc_rank = rank_mapping[self.rpc_rank]
 
-        class ResponseStatus(Enum):
-            SUCCESS = auto()
-            FAILURE = auto()
+        def execute_method(self, method: str | bytes, *args, **kwargs):
+            try:
+                return run_method(self, method, args, kwargs)
+            except Exception as e:
+                # if the driver worker also execute methods,
+                # exceptions in the rest worker may cause deadlock in rpc
+                # see https://github.com/vllm-project/vllm/issues/3455
+                msg = (
+                    f"Error executing method {method!r}. "
+                    "This might cause deadlock in distributed execution."
+                )
+                logger.exception(msg)
+                raise e
 
         def get_node_ip(self) -> str:
             return get_ip()
@@ -105,11 +107,9 @@ try:
         def execute_model_ray(
             self,
             execute_model_input: tuple["SchedulerOutput", "GrammarOutput"]
-            | tuple["SchedulerOutput", "GrammarOutput", "IntermediateTensors"]
             | tuple["SchedulerOutput", "GrammarOutput", "IntermediateTensors"],
         ) -> Union[
             "ModelRunnerOutput",
-            "AsyncModelRunnerOutput", 
             tuple["SchedulerOutput", "GrammarOutput", "IntermediateTensors"],
         ]:
             # This method is used by Ray Compiled Graph to execute the model,
@@ -128,36 +128,34 @@ try:
                 scheduler_output, intermediate_tensors
             )
             if self._is_intermediate_tensors(output):
+                if (
+                    self.worker.model_runner.supports_mm_inputs
+                    and get_pp_group().is_first_rank
+                ):
+                    # Strip mm_features before Ray forwards it to the next PP Stage.
+                    # PP Stage>0 only needs the intermediate tensors,
+                    # not preprocessed multimodal data.
+
+                    # scheduled_new_reqs is a required field of SchedulerOutput,
+                    # so accessing it directly will raise AttributeError if missing.
+                    for req in scheduler_output.scheduled_new_reqs:
+                        req.mm_features = []
                 return scheduler_output, grammar_output, output
 
             if isinstance(output, AsyncModelRunnerOutput):
-                if not self.use_async_scheduling:
-                    output = output.get_output()
-                else:
-                    output = output.get_output_async()
-            if not get_pp_group().is_last_rank:
+                output = output.get_output()
+            if not self._is_last_rank():
                 # Case where there are no scheduled requests
                 # but may still be finished requests.
                 assert not output or not output.req_ids
                 output = scheduler_output, grammar_output, None
             elif output is None:
                 output = self.worker.model_runner.sample_tokens(grammar_output)
-                
-                if self.use_async_scheduling:
-                    if self.output_rank == -1 or self.rpc_rank == self.output_rank:
-                        self.handle_output(output)
-                    
-                    if isinstance(output, AsyncModelRunnerOutput):
-                        output = output.get_output_async()
-                else:
-                    # Ensure outputs crossing Ray compiled DAG are serializable.
-                    # AsyncModelRunnerOutput holds CUDA events and cannot be
-                    # pickled.
-                    if isinstance(output, AsyncModelRunnerOutput):
-                        output = output.get_output()
-            else:
-                if self.use_async_scheduling and (self.output_rank == -1 or self.rpc_rank == self.output_rank):
-                    self.handle_output(output)
+                # Ensure outputs crossing Ray compiled DAG are serializable.
+                # AsyncModelRunnerOutput holds CUDA events and cannot be
+                # pickled.
+                if isinstance(output, AsyncModelRunnerOutput):
+                    output = output.get_output()
             return output
 
         def override_env_vars(self, vars: dict[str, str]):
@@ -165,41 +163,9 @@ try:
 
         def _is_intermediate_tensors(self, output) -> bool:
             return isinstance(output, IntermediateTensors)
-        
-        def enqueue_output(self, output: Any):
-            """Prepares output from the worker and enqueues it to the
-            worker_response_mq. If the output is an Exception, it is
-            converted to a FAILURE response.
-            """
-            import os
-            import threading
-            if isinstance(output, AsyncModelRunnerOutput):
-                output = output.get_output()
 
-            if isinstance(output, Exception):
-                result = (RayWorkerWrapper.ResponseStatus.FAILURE, str(output))
-            else:
-                result = (RayWorkerWrapper.ResponseStatus.SUCCESS, output)
-
-            if (response_mq := self.worker_response_mq) is not None:
-                response_mq.put(result)
-
-        def handle_output(self, output: Any):
-            """Handles output from the worker. If async scheduling is enabled,
-            it is passed to the async_output_busy_loop thread. Otherwise, it is
-            enqueued directly to the worker_response_mq.
-            """
-            if self.use_async_scheduling:
-                self.async_output_queue.put(output)
-            else:
-                self.enqueue_output(output)
-        
-        def async_output_busy_loop(self):
-            """Entrypoint for the thread which handles outputs asynchronously."""
-            while True:
-                output = self.async_output_queue.get()
-                self.enqueue_output(output)
-
+        def _is_last_rank(self) -> bool:
+            return get_pp_group().is_last_rank
 
     ray_import_err = None
 
@@ -231,34 +197,6 @@ class FutureWrapper(Future):
             return outputs
 
         return self.aggregator.aggregate(outputs, output_rank=0)
-
-class NonBlockFutureWrapper(Future):
-    def __init__(
-        self,
-        futures_queue: deque[tuple["FutureWrapper", Callable]],
-        aggregate: Callable = lambda x: x,
-    ):
-        self.futures_queue = futures_queue
-        self.aggregate = aggregate
-        super().__init__()
-
-    def result(self, timeout=None):
-        if timeout is not None:
-            raise RuntimeError("timeout not implemented")
-        # Drain any futures ahead of us in the queue.
-        while not self.done():
-            future, get_response = self.futures_queue.pop()
-            future.wait_for_response(get_response)
-        return super().result()
-
-    def wait_for_response(self, get_response: Callable):
-        try:
-            response = self.aggregate(get_response())
-            with suppress(InvalidStateError):
-                self.set_result(response)
-        except Exception as e:
-            with suppress(InvalidStateError):
-                self.set_exception(e)
 
 
 def ray_is_available() -> bool:

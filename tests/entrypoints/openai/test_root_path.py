@@ -8,10 +8,10 @@ from typing import Any, NamedTuple
 import openai  # use the official client for correctness check
 import pytest
 
-from ...utils import RemoteOpenAIServer, models_path_prefix
+from ...utils import RemoteOpenAIServer
 
 # # any model with a chat template should work here
-MODEL_NAME = os.path.join(models_path_prefix, "Qwen/Qwen2-1.5B-Instruct")
+MODEL_NAME = "Qwen/Qwen2-1.5B-Instruct"
 API_KEY = "abc-123"
 ERROR_API_KEY = "abc"
 ROOT_PATH = "llm"

@@ -79,7 +79,7 @@ def test_api_server_process_manager_init(api_server_args, with_stats_update):
     finally:
         # Always clean up the processes
         print("Cleaning up processes...")
-        manager.close()
+        manager.shutdown()
 
         # Give processes time to terminate
         time.sleep(0.2)
@@ -89,62 +89,64 @@ def test_api_server_process_manager_init(api_server_args, with_stats_update):
             assert not proc.is_alive()
 
 
-# @patch(
-#     "vllm.entrypoints.cli.serve.run_api_server_worker_proc", mock_run_api_server_worker
-# )
-# def test_wait_for_completion_or_failure(api_server_args):
-#     """Test that wait_for_completion_or_failure works with failures."""
-#     global WORKER_RUNTIME_SECONDS
-#     WORKER_RUNTIME_SECONDS = 1.0
+@patch(
+    "vllm.entrypoints.cli.serve.run_api_server_worker_proc", mock_run_api_server_worker
+)
+def test_wait_for_completion_or_failure(api_server_args):
+    """Test that wait_for_completion_or_failure works with failures."""
+    global WORKER_RUNTIME_SECONDS
+    WORKER_RUNTIME_SECONDS = 1.0
 
-#     # Create the manager
-#     manager = APIServerProcessManager(**api_server_args)
+    # Create the manager
+    manager = APIServerProcessManager(**api_server_args)
 
-#     try:
-#         assert len(manager.processes) == 3
+    try:
+        assert len(manager.processes) == 3
 
-#         # Create a result capture for the thread
-#         result: dict[str, Exception | None] = {"exception": None}
+        # Create a result capture for the thread
+        result: dict[str, Exception | None] = {"exception": None}
 
-#         def run_with_exception_capture():
-#             try:
-#                 wait_for_completion_or_failure(api_server_manager=manager)
-#             except Exception as e:
-#                 result["exception"] = e
+        def run_with_exception_capture():
+            try:
+                wait_for_completion_or_failure(api_server_manager=manager)
+            except Exception as e:
+                result["exception"] = e
+            finally:
+                manager.shutdown()
 
-#         # Start a thread to run wait_for_completion_or_failure
-#         wait_thread = threading.Thread(target=run_with_exception_capture, daemon=True)
-#         wait_thread.start()
+        # Start a thread to run wait_for_completion_or_failure
+        wait_thread = threading.Thread(target=run_with_exception_capture, daemon=True)
+        wait_thread.start()
 
-#         # Let all processes run for a short time
-#         time.sleep(0.2)
+        # Let all processes run for a short time
+        time.sleep(0.2)
 
-#         # All processes should still be running
-#         assert all(proc.is_alive() for proc in manager.processes)
+        # All processes should still be running
+        assert all(proc.is_alive() for proc in manager.processes)
 
-#         # Now simulate a process failure
-#         print("Simulating process failure...")
-#         manager.processes[0].terminate()
+        # Now simulate a process failure
+        print("Simulating process failure...")
+        manager.processes[0].terminate()
 
-#         # Wait for the wait_for_completion_or_failure
-#         # to detect and handle the failure
-#         # This should trigger it to terminate all other processes
-#         wait_thread.join(timeout=1.0)
+        # Wait for the wait_for_completion_or_failure
+        # to detect and handle the failure
+        # This should trigger it to terminate all other processes
+        wait_thread.join(timeout=1.0)
 
-#         # The wait thread should have exited
-#         assert not wait_thread.is_alive()
+        # The wait thread should have exited
+        assert not wait_thread.is_alive()
 
-#         # Verify that an exception was raised with appropriate error message
-#         assert result["exception"] is not None
-#         assert "died with exit code" in str(result["exception"])
+        # Verify that an exception was raised with appropriate error message
+        assert result["exception"] is not None
+        assert "died with exit code" in str(result["exception"])
 
-#         # All processes should now be terminated
-#         for i, proc in enumerate(manager.processes):
-#             assert not proc.is_alive(), f"Process {i} should not be alive"
+        # All processes should now be terminated
+        for i, proc in enumerate(manager.processes):
+            assert not proc.is_alive(), f"Process {i} should not be alive"
 
-#     finally:
-#         manager.close()
-#         time.sleep(0.2)
+    finally:
+        manager.shutdown()
+        time.sleep(0.2)
 
 
 @pytest.mark.timeout(30)
@@ -174,11 +176,14 @@ def test_normal_completion(api_server_args):
         # since all processes have already
         # terminated, it should return immediately
         # with no error
-        wait_for_completion_or_failure(api_server_manager=manager)
+        try:
+            wait_for_completion_or_failure(api_server_manager=manager)
+        finally:
+            manager.shutdown()
 
     finally:
         # Clean up just in case
-        manager.close()
+        manager.shutdown()
         time.sleep(0.2)
 
 
@@ -201,7 +206,7 @@ def test_external_process_monitoring(api_server_args):
         def __init__(self, proc):
             self.proc = proc
 
-        def close(self):
+        def shutdown(self):
             if self.proc.is_alive():
                 self.proc.terminate()
                 self.proc.join(timeout=0.5)
@@ -226,6 +231,9 @@ def test_external_process_monitoring(api_server_args):
                 )
             except Exception as e:
                 result["exception"] = e
+            finally:
+                manager.shutdown()
+                mock_coordinator.shutdown()
 
         # Start a thread to run wait_for_completion_or_failure
         wait_thread = threading.Thread(target=run_with_exception_capture, daemon=True)
@@ -259,6 +267,6 @@ def test_external_process_monitoring(api_server_args):
 
     finally:
         # Clean up
-        manager.close()
-        mock_coordinator.close()
+        manager.shutdown()
+        mock_coordinator.shutdown()
         time.sleep(0.2)

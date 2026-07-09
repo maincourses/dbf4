@@ -23,7 +23,7 @@ def cal_diff(
     if use_fp8:
         assert cos_diff < 1e-4
     else:
-        assert cos_diff < 1e-4  #1e-5
+        assert cos_diff < 1e-5
 
 
 FLASH_MLA_UNSUPPORTED_REASON = (
@@ -57,7 +57,7 @@ def test_flash_mla(
     init_dtype = torch.bfloat16 if torch_dtype == torch.float8_e4m3fn else torch_dtype
     torch.set_default_dtype(init_dtype)
     torch.set_default_device(device)
-    torch.cuda.set_device(device)
+    torch.accelerator.set_device_index(device)
     torch.manual_seed(0)
     random.seed(0)
 

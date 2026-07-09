@@ -5,13 +5,9 @@ from collections.abc import Mapping, Set
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-import os
 import pytest
 from packaging.version import Version
 from transformers import __version__ as TRANSFORMERS_VERSION
-# from ..utils import models_path_prefix
-
-models_path_prefix = os.getenv('VLLM_OPTEST_MODELS_PATH') or os.getenv("OPTEST_MODELS_PATH")
 
 from vllm.config.model import ModelDType, TokenizerMode
 
@@ -74,6 +70,12 @@ class _HfExamplesInfo:
     Whether to enforce eager execution. If True, we will
     disable CUDA graph and always execute the model in eager mode.
     If False, we will use CUDA graph and eager execution in hybrid.
+    """
+
+    enable_prefix_caching: bool = True
+    """
+    Whether to enable prefix caching for the model. If True, we will test the model with
+    prefix caching enabled. If False, we will test the model without prefix caching.
     """
 
     is_available_online: bool = True
@@ -190,250 +192,259 @@ class _HfExamplesInfo:
 
 _TEXT_GENERATION_EXAMPLE_MODELS = {
     # [Decoder-only]
-    "AfmoeForCausalLM": _HfExamplesInfo(os.path.join(models_path_prefix, "arcee-ai/Trinity-Nano-Preview")),
-    "ApertusForCausalLM": _HfExamplesInfo(os.path.join(models_path_prefix, "swiss-ai/Apertus-8B-Instruct-2509")),
-    "AquilaModel": _HfExamplesInfo(os.path.join(models_path_prefix, "BAAI/AquilaChat-7B"), trust_remote_code=True),
-    "AquilaForCausalLM": _HfExamplesInfo(os.path.join(models_path_prefix, "BAAI/AquilaChat2-7B"), trust_remote_code=True),
-    "ArceeForCausalLM": _HfExamplesInfo(os.path.join(models_path_prefix, "arcee-ai/AFM-4.5B-Base")),
+    "AfmoeForCausalLM": _HfExamplesInfo("arcee-ai/Trinity-Nano-Preview"),
+    "ApertusForCausalLM": _HfExamplesInfo("swiss-ai/Apertus-8B-Instruct-2509"),
+    "AquilaModel": _HfExamplesInfo("BAAI/AquilaChat-7B", trust_remote_code=True),
+    "AquilaForCausalLM": _HfExamplesInfo("BAAI/AquilaChat2-7B", trust_remote_code=True),
+    "ArceeForCausalLM": _HfExamplesInfo("arcee-ai/AFM-4.5B-Base"),
     "ArcticForCausalLM": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "Snowflake/snowflake-arctic-instruct"), trust_remote_code=True
+        "Snowflake/snowflake-arctic-instruct", trust_remote_code=True
     ),
+    "AXK1ForCausalLM": _HfExamplesInfo("skt/A.X-K1", trust_remote_code=True),
     "BaiChuanForCausalLM": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "baichuan-inc/Baichuan-7B"), trust_remote_code=True
+        "baichuan-inc/Baichuan-7B", trust_remote_code=True
     ),
     "BaichuanForCausalLM": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "baichuan-inc/Baichuan2-7B-chat"), trust_remote_code=True
+        "baichuan-inc/Baichuan2-7B-chat", trust_remote_code=True
     ),
     "BailingMoeForCausalLM": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "inclusionAI/Ling-lite-1.5"), trust_remote_code=True
+        "inclusionAI/Ling-lite-1.5", trust_remote_code=True
     ),
     "BailingMoeV2ForCausalLM": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "inclusionAI/Ling-mini-2.0"), trust_remote_code=True
+        "inclusionAI/Ling-mini-2.0", trust_remote_code=True
+    ),
+    "BailingMoeV2_5ForCausalLM": _HfExamplesInfo(
+        "inclusionAI/Ring-2.5-1T", trust_remote_code=True
     ),
     "BambaForCausalLM": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "ibm-ai-platform/Bamba-9B-v1"),
-        extras={"tiny": os.path.join(models_path_prefix, "hmellor/tiny-random-BambaForCausalLM")},
+        "ibm-ai-platform/Bamba-9B-v1",
+        extras={"tiny": "hmellor/tiny-random-BambaForCausalLM"},
     ),
     "BloomForCausalLM": _HfExamplesInfo(
-        "bigscience/bloom-560m", {"1b": os.path.join(models_path_prefix, "bigscience/bloomz-1b1")}
+        "bigscience/bloom-560m", {"1b": "bigscience/bloomz-1b1"}
     ),
     "ChatGLMModel": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "zai-org/chatglm3-6b"), trust_remote_code=True, max_transformers_version="4.48"
+        "zai-org/chatglm3-6b", trust_remote_code=True, max_transformers_version="4.48"
     ),
     "ChatGLMForConditionalGeneration": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "thu-coai/ShieldLM-6B-chatglm3"),
+        "thu-coai/ShieldLM-6B-chatglm3",
         trust_remote_code=True,
     ),
     "CohereForCausalLM": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "CohereLabs/c4ai-command-r-v01"), trust_remote_code=True
+        "CohereLabs/c4ai-command-r-v01", trust_remote_code=True
     ),
     "Cohere2ForCausalLM": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "CohereLabs/c4ai-command-r7b-12-2024"),
+        "CohereLabs/c4ai-command-r7b-12-2024",
         trust_remote_code=True,
     ),
-    "CwmForCausalLM": _HfExamplesInfo(os.path.join(models_path_prefix, "facebook/cwm"), min_transformers_version="4.58"),
+    "CwmForCausalLM": _HfExamplesInfo("facebook/cwm", min_transformers_version="4.58"),
     # FIXME: databricks/dbrx-instruct has been deleted
     "DbrxForCausalLM": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "databricks/dbrx-instruct"), is_available_online=False
+        "databricks/dbrx-instruct", is_available_online=False
     ),
     "DeciLMForCausalLM": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "nvidia/Llama-3_3-Nemotron-Super-49B-v1"),
+        "nvidia/Llama-3_3-Nemotron-Super-49B-v1",
         trust_remote_code=True,
     ),
     "DeepseekForCausalLM": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "deepseek-ai/deepseek-moe-16b-base"),
+        "deepseek-ai/deepseek-moe-16b-base",
         trust_remote_code=True,
     ),
     "DeepseekV2ForCausalLM": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "deepseek-ai/DeepSeek-V2-Lite-Chat"),
+        "deepseek-ai/DeepSeek-V2-Lite-Chat",
         trust_remote_code=True,
     ),
     "DeepseekV3ForCausalLM": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "deepseek-ai/DeepSeek-V3"),
+        "deepseek-ai/DeepSeek-V3",
         trust_remote_code=True,
     ),
-    "DeepseekV32ForCausalLM": _HfExamplesInfo(os.path.join(models_path_prefix, "deepseek-ai/DeepSeek-V3.2-Exp")),
-    "Ernie4_5ForCausalLM": _HfExamplesInfo(os.path.join(models_path_prefix, "baidu/ERNIE-4.5-0.3B-PT")),
-    "Ernie4_5_MoeForCausalLM": _HfExamplesInfo(os.path.join(models_path_prefix, "baidu/ERNIE-4.5-21B-A3B-PT")),
+    "DeepseekV32ForCausalLM": _HfExamplesInfo("deepseek-ai/DeepSeek-V3.2-Exp"),
+    "Ernie4_5ForCausalLM": _HfExamplesInfo("baidu/ERNIE-4.5-0.3B-PT"),
+    "Ernie4_5_MoeForCausalLM": _HfExamplesInfo("baidu/ERNIE-4.5-21B-A3B-PT"),
     "ExaoneForCausalLM": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "LGAI-EXAONE/EXAONE-3.0-7.8B-Instruct"), trust_remote_code=True
+        "LGAI-EXAONE/EXAONE-3.0-7.8B-Instruct", trust_remote_code=True
     ),
-    "Exaone4ForCausalLM": _HfExamplesInfo(os.path.join(models_path_prefix, "LGAI-EXAONE/EXAONE-4.0-32B")),
+    "Exaone4ForCausalLM": _HfExamplesInfo("LGAI-EXAONE/EXAONE-4.0-32B"),
     "ExaoneMoEForCausalLM": _HfExamplesInfo(
         "LGAI-EXAONE/K-EXAONE-236B-A23B", min_transformers_version="5.1.0"
     ),
-    "Fairseq2LlamaForCausalLM": _HfExamplesInfo(os.path.join(models_path_prefix, "mgleize/fairseq2-dummy-Llama-3.2-1B")),
-    "FalconForCausalLM": _HfExamplesInfo(os.path.join(models_path_prefix, "tiiuae/falcon-7b")),
-    "FalconH1ForCausalLM": _HfExamplesInfo(os.path.join(models_path_prefix, "tiiuae/Falcon-H1-0.5B-Base")),
-    "FlexOlmoForCausalLM": _HfExamplesInfo(os.path.join(models_path_prefix, "allenai/Flex-reddit-2x7B-1T")),
-    "GemmaForCausalLM": _HfExamplesInfo(os.path.join(models_path_prefix, "google/gemma-1.1-2b-it")),
+    "Fairseq2LlamaForCausalLM": _HfExamplesInfo("mgleize/fairseq2-dummy-Llama-3.2-1B"),
+    "FalconForCausalLM": _HfExamplesInfo("tiiuae/falcon-7b"),
+    "FalconH1ForCausalLM": _HfExamplesInfo("tiiuae/Falcon-H1-0.5B-Base"),
+    "FlexOlmoForCausalLM": _HfExamplesInfo("allenai/Flex-reddit-2x7B-1T"),
+    "GemmaForCausalLM": _HfExamplesInfo("google/gemma-1.1-2b-it"),
     "Gemma2ForCausalLM": _HfExamplesInfo(
-        "google/gemma-2-9b", extras={"tiny": os.path.join(models_path_prefix, "google/gemma-2-2b-it")}
+        "google/gemma-2-9b", extras={"tiny": "google/gemma-2-2b-it"}
     ),
-    "Gemma3ForCausalLM": _HfExamplesInfo(os.path.join(models_path_prefix, "google/gemma-3-1b-it")),
-    "Gemma3nForCausalLM": _HfExamplesInfo(os.path.join(models_path_prefix, "google/gemma-3n-E2B-it")),
-    "GlmForCausalLM": _HfExamplesInfo(os.path.join(models_path_prefix, "zai-org/glm-4-9b-chat-hf")),
-    "Glm4ForCausalLM": _HfExamplesInfo(os.path.join(models_path_prefix, "zai-org/GLM-4-9B-0414")),
-    "Glm4MoeForCausalLM": _HfExamplesInfo(os.path.join(models_path_prefix, "zai-org/GLM-4.5")),
+    "Gemma3ForCausalLM": _HfExamplesInfo("google/gemma-3-1b-it"),
+    "Gemma3nForCausalLM": _HfExamplesInfo("google/gemma-3n-E2B-it"),
+    "GlmForCausalLM": _HfExamplesInfo("zai-org/glm-4-9b-chat-hf"),
+    "Glm4ForCausalLM": _HfExamplesInfo("zai-org/GLM-4-9B-0414"),
+    "Glm4MoeForCausalLM": _HfExamplesInfo("zai-org/GLM-4.5"),
     "Glm4MoeLiteForCausalLM": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "zai-org/GLM-4.7-Flash"),
+        "zai-org/GLM-4.7-Flash",
         min_transformers_version="5.0.0",
     ),
     "GlmMoeDsaForCausalLM": _HfExamplesInfo(
         "zai-org/GLM-5", min_transformers_version="5.0.1", is_available_online=False
     ),
-    "GPT2LMHeadModel": _HfExamplesInfo(os.path.join(models_path_prefix, "openai-community/gpt2"), {"alias": os.path.join(models_path_prefix, "gpt2")}),
+    "GPT2LMHeadModel": _HfExamplesInfo("openai-community/gpt2", {"alias": "gpt2"}),
     "GPTBigCodeForCausalLM": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "bigcode/starcoder"),
+        "bigcode/starcoder",
         extras={
-            "tiny": os.path.join(models_path_prefix, "bigcode/tiny_starcoder_py"),
-            "santacoder": os.path.join(models_path_prefix, "bigcode/gpt_bigcode-santacoder"),
+            "tiny": "bigcode/tiny_starcoder_py",
+            "santacoder": "bigcode/gpt_bigcode-santacoder",
         },
     ),
     "GPTJForCausalLM": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "Milos/slovak-gpt-j-405M"), {"6b": os.path.join(models_path_prefix, "EleutherAI/gpt-j-6b")}
+        "Milos/slovak-gpt-j-405M", {"6b": "EleutherAI/gpt-j-6b"}
     ),
     "GPTNeoXForCausalLM": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "EleutherAI/pythia-70m"), {"1b": os.path.join(models_path_prefix, "EleutherAI/pythia-1.4b")}
+        "EleutherAI/pythia-70m", {"1b": "EleutherAI/pythia-1.4b"}
     ),
-    "GptOssForCausalLM": _HfExamplesInfo(os.path.join(models_path_prefix, "lmsys/gpt-oss-20b-bf16")),
-    "GraniteForCausalLM": _HfExamplesInfo(os.path.join(models_path_prefix, "ibm/PowerLM-3b")),
-    "GraniteMoeForCausalLM": _HfExamplesInfo(os.path.join(models_path_prefix, "ibm/PowerMoE-3b")),
+    "GptOssForCausalLM": _HfExamplesInfo("lmsys/gpt-oss-20b-bf16"),
+    "GraniteForCausalLM": _HfExamplesInfo("ibm/PowerLM-3b"),
+    "GraniteMoeForCausalLM": _HfExamplesInfo("ibm/PowerMoE-3b"),
     "GraniteMoeHybridForCausalLM": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "ibm-granite/granite-4.0-tiny-preview")
+        "ibm-granite/granite-4.0-tiny-preview"
     ),
     "GraniteMoeSharedForCausalLM": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "ibm-research/moe-7b-1b-active-shared-experts")
+        "ibm-research/moe-7b-1b-active-shared-experts"
     ),
     "Grok1ModelForCausalLM": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "hpcai-tech/grok-1"), trust_remote_code=True
+        "hpcai-tech/grok-1", trust_remote_code=True
     ),
-    "Grok1ForCausalLM": _HfExamplesInfo(os.path.join(models_path_prefix, "xai-org/grok-2"), trust_remote_code=True),
-    "HunYuanDenseV1ForCausalLM": _HfExamplesInfo(os.path.join(models_path_prefix, "tencent/Hunyuan-7B-Instruct")),
+    "Grok1ForCausalLM": _HfExamplesInfo("xai-org/grok-2", trust_remote_code=True),
+    "HunYuanDenseV1ForCausalLM": _HfExamplesInfo("tencent/Hunyuan-7B-Instruct"),
     "HunYuanMoEV1ForCausalLM": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "tencent/Hunyuan-A13B-Instruct"), trust_remote_code=True
+        "tencent/Hunyuan-A13B-Instruct", trust_remote_code=True
+    ),
+    "HyperCLOVAXForCausalLM": _HfExamplesInfo(
+        "naver-hyperclovax/HyperCLOVAX-SEED-Think-14B",
+        trust_remote_code=True,
     ),
     "InternLMForCausalLM": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "internlm/internlm-chat-7b"), trust_remote_code=True
+        "internlm/internlm-chat-7b", trust_remote_code=True
     ),
     "InternLM2ForCausalLM": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "internlm/internlm2-chat-7b"), trust_remote_code=True
+        "internlm/internlm2-chat-7b", trust_remote_code=True
     ),
     "InternLM2VEForCausalLM": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "OpenGVLab/Mono-InternVL-2B"), trust_remote_code=True
+        "OpenGVLab/Mono-InternVL-2B", trust_remote_code=True
     ),
     "InternLM3ForCausalLM": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "internlm/internlm3-8b-instruct"), trust_remote_code=True
-    ),
-    "JAISLMHeadModel": _HfExamplesInfo(os.path.join(models_path_prefix, "inceptionai/jais-13b-chat")),
-    "Jais2ForCausalLM": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "inceptionai/Jais-2-8B-Chat"), min_transformers_version="4.58"
+        "internlm/internlm3-8b-instruct", trust_remote_code=True
     ),
     "IQuestCoderForCausalLM": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "IQuestLab/IQuest-Coder-V1-40B-Instruct"), trust_remote_code=True
+        "IQuestLab/IQuest-Coder-V1-40B-Instruct", trust_remote_code=True
     ),
     "IQuestLoopCoderForCausalLM": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "IQuestLab/IQuest-Coder-V1-40B-Loop-Instruct"), trust_remote_code=True
+        "IQuestLab/IQuest-Coder-V1-40B-Loop-Instruct", trust_remote_code=True
     ),
-    "JAISLMHeadModel": _HfExamplesInfo(os.path.join(models_path_prefix, "inceptionai/jais-13b-chat")),
+    "JAISLMHeadModel": _HfExamplesInfo("inceptionai/jais-13b-chat"),
     "Jais2ForCausalLM": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "inceptionai/Jais-2-8B-Chat"), min_transformers_version="4.58"
+        "inceptionai/Jais-2-8B-Chat", min_transformers_version="4.58"
     ),
     "JambaForCausalLM": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "ai21labs/AI21-Jamba-1.5-Mini"),
+        "ai21labs/AI21-Jamba-1.5-Mini",
         extras={
-            "tiny": os.path.join(models_path_prefix, "ai21labs/Jamba-tiny-dev"),
-            "random": os.path.join(models_path_prefix, "ai21labs/Jamba-tiny-random"),
+            "tiny": "ai21labs/Jamba-tiny-dev",
+            "random": "ai21labs/Jamba-tiny-random",
         },
     ),
     "KimiLinearForCausalLM": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "moonshotai/Kimi-Linear-48B-A3B-Instruct"), trust_remote_code=True
+        "moonshotai/Kimi-Linear-48B-A3B-Instruct", trust_remote_code=True
     ),
-    "Lfm2ForCausalLM": _HfExamplesInfo(os.path.join(models_path_prefix, "LiquidAI/LFM2-1.2B")),
+    "Lfm2ForCausalLM": _HfExamplesInfo("LiquidAI/LFM2-1.2B"),
     "Lfm2MoeForCausalLM": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "LiquidAI/LFM2-8B-A1B"), min_transformers_version="4.58"
+        "LiquidAI/LFM2-8B-A1B",
+        min_transformers_version="5.0.0",
+        use_original_num_layers=True,
+        # Initialize at least one MoE layer
+        hf_overrides={"num_hidden_layers": 4},
     ),
     "LlamaForCausalLM": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "meta-llama/Llama-3.2-1B-Instruct"),
+        "meta-llama/Llama-3.2-1B-Instruct",
         extras={
-            "guard": os.path.join(models_path_prefix, "meta-llama/Llama-Guard-3-1B"),
-            "hermes": os.path.join(models_path_prefix, "NousResearch/Hermes-3-Llama-3.1-8B"),
-            "fp8": os.path.join(models_path_prefix, "RedHatAI/Meta-Llama-3.1-8B-Instruct-FP8"),
-            "tiny": os.path.join(models_path_prefix, "hmellor/tiny-random-LlamaForCausalLM"),
+            "guard": "meta-llama/Llama-Guard-3-1B",
+            "hermes": "NousResearch/Hermes-3-Llama-3.1-8B",
+            "fp8": "RedHatAI/Meta-Llama-3.1-8B-Instruct-FP8",
+            "tiny": "hmellor/tiny-random-LlamaForCausalLM",
         },
     ),
     "LLaMAForCausalLM": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "decapoda-research/llama-7b-hf"), is_available_online=False
+        "decapoda-research/llama-7b-hf", is_available_online=False
     ),
     "Llama4ForCausalLM": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "meta-llama/Llama-4-Scout-17B-16E-Instruct"),
+        "meta-llama/Llama-4-Scout-17B-16E-Instruct",
     ),
     "LongcatFlashForCausalLM": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "meituan-longcat/LongCat-Flash-Chat"), trust_remote_code=True
+        "meituan-longcat/LongCat-Flash-Chat", trust_remote_code=True
     ),
-    "MambaForCausalLM": _HfExamplesInfo(os.path.join(models_path_prefix, "state-spaces/mamba-130m-hf")),
+    "MambaForCausalLM": _HfExamplesInfo("state-spaces/mamba-130m-hf"),
     "Mamba2ForCausalLM": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "mistralai/Mamba-Codestral-7B-v0.1"),
+        "mistralai/Mamba-Codestral-7B-v0.1",
         extras={
-            "random": os.path.join(models_path_prefix, "yujiepan/mamba2-codestral-v0.1-tiny-random"),
+            "random": "yujiepan/mamba2-codestral-v0.1-tiny-random",
         },
     ),
-    "FalconMambaForCausalLM": _HfExamplesInfo(os.path.join(models_path_prefix, "tiiuae/falcon-mamba-7b-instruct")),
+    "FalconMambaForCausalLM": _HfExamplesInfo("tiiuae/falcon-mamba-7b-instruct"),
     "MiniCPMForCausalLM": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "openbmb/MiniCPM-2B-sft-bf16"), trust_remote_code=True
+        "openbmb/MiniCPM-2B-sft-bf16", trust_remote_code=True
     ),
     "MiniCPM3ForCausalLM": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "openbmb/MiniCPM3-4B"), trust_remote_code=True
+        "openbmb/MiniCPM3-4B", trust_remote_code=True
     ),
     "MiniCPM4ForCausalLM": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "openbmb/MiniCPM4.1-8B"), trust_remote_code=True
+        "openbmb/MiniCPM4.1-8B", trust_remote_code=True
     ),
-    "MiniMaxForCausalLM": _HfExamplesInfo(os.path.join(models_path_prefix, "MiniMaxAI/MiniMax-Text-01-hf")),
+    "MiniMaxForCausalLM": _HfExamplesInfo("MiniMaxAI/MiniMax-Text-01-hf"),
     "MiniMaxText01ForCausalLM": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "MiniMaxAI/MiniMax-Text-01"),
+        "MiniMaxAI/MiniMax-Text-01",
         trust_remote_code=True,
         revision="a59aa9cbc53b9fb8742ca4e9e1531b9802b6fdc3",
     ),
     "MiniMaxM1ForCausalLM": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "MiniMaxAI/MiniMax-M1-40k"), trust_remote_code=True
+        "MiniMaxAI/MiniMax-M1-40k", trust_remote_code=True
     ),
     "MiniMaxM2ForCausalLM": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "MiniMaxAI/MiniMax-M2"),
+        "MiniMaxAI/MiniMax-M2",
         trust_remote_code=True,
     ),
-    "MistralForCausalLM": _HfExamplesInfo(os.path.join(models_path_prefix, "mistralai/Mistral-7B-Instruct-v0.1")),
+    "MistralForCausalLM": _HfExamplesInfo("mistralai/Mistral-7B-Instruct-v0.1"),
     "MistralLarge3ForCausalLM": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "mistralai/Mistral-Large-3-675B-Instruct-2512-NVFP4")
+        "mistralai/Mistral-Large-3-675B-Instruct-2512-NVFP4"
     ),
     "MixtralForCausalLM": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "mistralai/Mixtral-8x7B-Instruct-v0.1"),
-        {"tiny": os.path.join(models_path_prefix, "TitanML/tiny-mixtral")},
+        "mistralai/Mixtral-8x7B-Instruct-v0.1",
+        {"tiny": "TitanML/tiny-mixtral"},
     ),
-    "MptForCausalLM": _HfExamplesInfo(os.path.join(models_path_prefix, "mpt"), is_available_online=False),
+    "MptForCausalLM": _HfExamplesInfo("mpt", is_available_online=False),
     # FIXME: mosaicml/mpt-7b has been deleted
-    "MPTForCausalLM": _HfExamplesInfo(os.path.join(models_path_prefix, "mosaicml/mpt-7b"), is_available_online=False),
-    "NemotronForCausalLM": _HfExamplesInfo(os.path.join(models_path_prefix, "nvidia/Minitron-8B-Base")),
+    "MPTForCausalLM": _HfExamplesInfo("mosaicml/mpt-7b", is_available_online=False),
+    "NemotronForCausalLM": _HfExamplesInfo("nvidia/Minitron-8B-Base"),
     "NemotronHForCausalLM": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "nvidia/Nemotron-H-8B-Base-8K"), trust_remote_code=True
+        "nvidia/Nemotron-H-8B-Base-8K", trust_remote_code=True
     ),
-    "OlmoForCausalLM": _HfExamplesInfo(os.path.join(models_path_prefix, "allenai/OLMo-1B-hf")),
-    "Olmo2ForCausalLM": _HfExamplesInfo(os.path.join(models_path_prefix, "allenai/OLMo-2-0425-1B")),
-    "Olmo3ForCausalLM": _HfExamplesInfo(os.path.join(models_path_prefix, "allenai/Olmo-3-7B-Instruct")),
-    "OlmoeForCausalLM": _HfExamplesInfo(os.path.join(models_path_prefix, "allenai/OLMoE-1B-7B-0924-Instruct")),
-    "OpenPanguMTPModel": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "FreedomIntelligence/openPangu-Ultra-MoE-718B-V1.1"),
+    "NemotronHPuzzleForCausalLM": _HfExamplesInfo(
+        "",
         trust_remote_code=True,
         is_available_online=False,
     ),
+    "OlmoForCausalLM": _HfExamplesInfo("allenai/OLMo-1B-hf"),
+    "Olmo2ForCausalLM": _HfExamplesInfo("allenai/OLMo-2-0425-1B"),
+    "Olmo3ForCausalLM": _HfExamplesInfo("allenai/Olmo-3-7B-Instruct"),
+    "OlmoHybridForCausalLM": _HfExamplesInfo("allenai/Olmo-Hybrid-7B"),
+    "OlmoeForCausalLM": _HfExamplesInfo("allenai/OLMoE-1B-7B-0924-Instruct"),
     "OPTForCausalLM": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "facebook/opt-125m"), {"1b": os.path.join(models_path_prefix, "facebook/opt-iml-max-1.3b")}
+        "facebook/opt-125m", {"1b": "facebook/opt-iml-max-1.3b"}
     ),
     "OrionForCausalLM": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "OrionStarAI/Orion-14B-Chat"), trust_remote_code=True
+        "OrionStarAI/Orion-14B-Chat", trust_remote_code=True
     ),
-    "OuroForCausalLM": _HfExamplesInfo(os.path.join(models_path_prefix, "ByteDance/Ouro-1.4B"), trust_remote_code=True),
+    "OuroForCausalLM": _HfExamplesInfo("ByteDance/Ouro-1.4B", trust_remote_code=True),
     "PanguEmbeddedForCausalLM": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "FreedomIntelligence/openPangu-Embedded-7B-V1.1"), trust_remote_code=True
+        "FreedomIntelligence/openPangu-Embedded-7B-V1.1", trust_remote_code=True
     ),
     "PanguProMoEV2ForCausalLM": _HfExamplesInfo(
         "",
@@ -441,26 +452,26 @@ _TEXT_GENERATION_EXAMPLE_MODELS = {
         is_available_online=False,
     ),
     "PanguUltraMoEForCausalLM": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "FreedomIntelligence/openPangu-Ultra-MoE-718B-V1.1"),
+        "FreedomIntelligence/openPangu-Ultra-MoE-718B-V1.1",
         trust_remote_code=True,
         is_available_online=False,
     ),
-    "PersimmonForCausalLM": _HfExamplesInfo(os.path.join(models_path_prefix, "adept/persimmon-8b-chat")),
-    "PhiForCausalLM": _HfExamplesInfo(os.path.join(models_path_prefix, "microsoft/phi-2")),
-    "Phi3ForCausalLM": _HfExamplesInfo(os.path.join(models_path_prefix, "microsoft/Phi-3-mini-4k-instruct")),
+    "PersimmonForCausalLM": _HfExamplesInfo("adept/persimmon-8b-chat"),
+    "PhiForCausalLM": _HfExamplesInfo("microsoft/phi-2"),
+    "Phi3ForCausalLM": _HfExamplesInfo("microsoft/Phi-3-mini-4k-instruct"),
     "PhiMoEForCausalLM": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "microsoft/Phi-3.5-MoE-instruct"), trust_remote_code=True
+        "microsoft/Phi-3.5-MoE-instruct", trust_remote_code=True
     ),
     "Plamo2ForCausalLM": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "pfnet/plamo-2-1b"),
+        "pfnet/plamo-2-1b",
         trust_remote_code=True,
     ),
     "Plamo3ForCausalLM": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "pfnet/plamo-3-nict-2b-base"),
+        "pfnet/plamo-3-nict-2b-base",
         trust_remote_code=True,
     ),
     "QWenLMHeadModel": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "Qwen/Qwen-7B-Chat"),
+        "Qwen/Qwen-7B-Chat",
         max_transformers_version="4.53",
         transformers_version_reason={
             "hf": "HF model uses remote code that is not compatible with latest Transformers"  # noqa: E501
@@ -468,123 +479,127 @@ _TEXT_GENERATION_EXAMPLE_MODELS = {
         trust_remote_code=True,
     ),
     "Qwen2ForCausalLM": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "Qwen/Qwen2-0.5B-Instruct"),
+        "Qwen/Qwen2-0.5B-Instruct",
         extras={
-            "2.5": os.path.join(models_path_prefix, "Qwen/Qwen2.5-0.5B-Instruct"),
-            "2.5-1.5B": os.path.join(models_path_prefix, "Qwen/Qwen2.5-1.5B-Instruct"),
+            "2.5": "Qwen/Qwen2.5-0.5B-Instruct",
+            "2.5-1.5B": "Qwen/Qwen2.5-1.5B-Instruct",
         },
     ),
-    "Qwen2MoeForCausalLM": _HfExamplesInfo(os.path.join(models_path_prefix, "Qwen/Qwen1.5-MoE-A2.7B-Chat")),
-    "Qwen3ForCausalLM": _HfExamplesInfo(os.path.join(models_path_prefix, "Qwen/Qwen3-8B")),
-    "Qwen3MoeForCausalLM": _HfExamplesInfo(os.path.join(models_path_prefix, "Qwen/Qwen3-30B-A3B")),
+    "Qwen2MoeForCausalLM": _HfExamplesInfo("Qwen/Qwen1.5-MoE-A2.7B-Chat"),
+    "Qwen3ForCausalLM": _HfExamplesInfo("Qwen/Qwen3-8B"),
+    "Qwen3MoeForCausalLM": _HfExamplesInfo("Qwen/Qwen3-30B-A3B"),
     "Qwen3NextForCausalLM": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "Qwen/Qwen3-Next-80B-A3B-Instruct"),
-        extras={"tiny-random": os.path.join(models_path_prefix, "tiny-random/qwen3-next-moe")},
+        "Qwen/Qwen3-Next-80B-A3B-Instruct",
+        extras={"tiny-random": "tiny-random/qwen3-next-moe"},
         min_transformers_version="4.56.3",
     ),
-    "RWForCausalLM": _HfExamplesInfo(os.path.join(models_path_prefix, "tiiuae/falcon-40b")),
+    "RWForCausalLM": _HfExamplesInfo("tiiuae/falcon-40b"),
+    "SarvamMoEForCausalLM": _HfExamplesInfo(
+        "sarvamai/sarvam-30b",
+        trust_remote_code=True,
+        max_model_len=4096,
+        is_available_online=True,
+    ),
+    "SarvamMLAForCausalLM": _HfExamplesInfo(
+        "sarvamai/sarvam-105b",
+        trust_remote_code=True,
+        max_model_len=4096,
+        is_available_online=True,
+    ),
     "SeedOssForCausalLM": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "ByteDance-Seed/Seed-OSS-36B-Instruct"),
+        "ByteDance-Seed/Seed-OSS-36B-Instruct",
         trust_remote_code=True,
     ),
+    "SmolLM3ForCausalLM": _HfExamplesInfo("HuggingFaceTB/SmolLM3-3B"),
+    "StableLMEpochForCausalLM": _HfExamplesInfo("stabilityai/stablelm-zephyr-3b"),
+    "StableLmForCausalLM": _HfExamplesInfo("stabilityai/stablelm-3b-4e1t"),
+    "Starcoder2ForCausalLM": _HfExamplesInfo("bigcode/starcoder2-3b"),
     "Step1ForCausalLM": _HfExamplesInfo(
         "stepfun-ai/Step-Audio-EditX", trust_remote_code=True
     ),
     "Step3p5ForCausalLM": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "stepfun-ai/step-3.5-flash"), is_available_online=False
+        "stepfun-ai/Step-3.5-Flash",
+        use_original_num_layers=True,
+        # Initialize at least one MoE layer
+        hf_overrides={"num_hidden_layers": 4},
     ),
-    "SmolLM3ForCausalLM": _HfExamplesInfo(os.path.join(models_path_prefix, "HuggingFaceTB/SmolLM3-3B")),
-    "StableLMEpochForCausalLM": _HfExamplesInfo(os.path.join(models_path_prefix, "stabilityai/stablelm-zephyr-3b")),
-    "StableLmForCausalLM": _HfExamplesInfo(os.path.join(models_path_prefix, "stabilityai/stablelm-3b-4e1t")),
-    "Starcoder2ForCausalLM": _HfExamplesInfo(os.path.join(models_path_prefix, "bigcode/starcoder2-3b")),
-    "Step3TextForCausalLM": _HfExamplesInfo(os.path.join(models_path_prefix, "stepfun-ai/step3"), trust_remote_code=True),
+    "Step3TextForCausalLM": _HfExamplesInfo("stepfun-ai/step3", trust_remote_code=True),
     "SolarForCausalLM": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "upstage/solar-pro-preview-instruct"), trust_remote_code=True
+        "upstage/solar-pro-preview-instruct", trust_remote_code=True
     ),
     "TeleChatForCausalLM": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "chuhac/TeleChat2-35B"), trust_remote_code=True
+        "chuhac/TeleChat2-35B", trust_remote_code=True
     ),
     "TeleChat2ForCausalLM": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "Tele-AI/TeleChat2-3B"), trust_remote_code=True
+        "Tele-AI/TeleChat2-3B", trust_remote_code=True
     ),
     "TeleFLMForCausalLM": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "CofeAI/FLM-2-52B-Instruct-2407"), trust_remote_code=True
+        "CofeAI/FLM-2-52B-Instruct-2407", trust_remote_code=True
     ),
     "XverseForCausalLM": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "xverse/XVERSE-7B-Chat"),
-        tokenizer=os.path.join(models_path_prefix, "meta-llama/Llama-2-7b"),
+        "xverse/XVERSE-7B-Chat",
+        tokenizer="meta-llama/Llama-2-7b",
         trust_remote_code=True,
     ),
-    "Zamba2ForCausalLM": _HfExamplesInfo(os.path.join(models_path_prefix, "Zyphra/Zamba2-7B-instruct")),
-    "MiMoForCausalLM": _HfExamplesInfo(os.path.join(models_path_prefix, "XiaomiMiMo/MiMo-7B-RL"), trust_remote_code=True),
+    "Zamba2ForCausalLM": _HfExamplesInfo("Zyphra/Zamba2-7B-instruct"),
+    "MiMoForCausalLM": _HfExamplesInfo("XiaomiMiMo/MiMo-7B-RL", trust_remote_code=True),
     "MiMoV2FlashForCausalLM": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "XiaomiMiMo/MiMo-V2-Flash"), trust_remote_code=True
+        "XiaomiMiMo/MiMo-V2-Flash", trust_remote_code=True
     ),
-    "Dots1ForCausalLM": _HfExamplesInfo(os.path.join(models_path_prefix, "rednote-hilab/dots.llm1.inst")),
+    "Dots1ForCausalLM": _HfExamplesInfo("rednote-hilab/dots.llm1.inst"),
 }
 
 _EMBEDDING_EXAMPLE_MODELS = {
     # [Text-only]
-    "BertModel": _HfExamplesInfo(os.path.join(models_path_prefix, "BAAI/bge-base-en-v1.5")),
-    "BgeM3EmbeddingModel": _HfExamplesInfo(os.path.join(models_path_prefix, "BAAI/bge-m3")),
-    "Gemma2Model": _HfExamplesInfo(os.path.join(models_path_prefix, "BAAI/bge-multilingual-gemma2")),
-    "Gemma3TextModel": _HfExamplesInfo(os.path.join(models_path_prefix, "google/embeddinggemma-300m")),
-    "GritLM": _HfExamplesInfo(os.path.join(models_path_prefix, "parasail-ai/GritLM-7B-vllm")),
+    "BertModel": _HfExamplesInfo("BAAI/bge-base-en-v1.5"),
+    "ErnieModel": _HfExamplesInfo("shibing624/text2vec-base-chinese-sentence"),
+    "BertSpladeSparseEmbeddingModel": _HfExamplesInfo(
+        "naver/splade-v3",
+        hf_overrides={"architectures": ["BertSpladeSparseEmbeddingModel"]},
+    ),
+    "BgeM3EmbeddingModel": _HfExamplesInfo("BAAI/bge-m3"),
+    "Gemma2Model": _HfExamplesInfo("BAAI/bge-multilingual-gemma2"),
+    "Gemma3TextModel": _HfExamplesInfo("google/embeddinggemma-300m"),
+    "GritLM": _HfExamplesInfo("parasail-ai/GritLM-7B-vllm"),
     "GteModel": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "Snowflake/snowflake-arctic-embed-m-v2.0"), trust_remote_code=True
+        "Snowflake/snowflake-arctic-embed-m-v2.0", trust_remote_code=True
     ),
     "GteNewModel": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "Alibaba-NLP/gte-base-en-v1.5"),
+        "Alibaba-NLP/gte-base-en-v1.5",
         trust_remote_code=True,
         hf_overrides={"architectures": ["GteNewModel"]},
     ),
-    "InternLM2ForRewardModel": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "internlm/internlm2-1_8b-reward"), trust_remote_code=True
-    ),
-    "JambaForSequenceClassification": _HfExamplesInfo(os.path.join(models_path_prefix, "ai21labs/Jamba-tiny-reward-dev")),
     "LlamaModel": _HfExamplesInfo("llama", is_available_online=False),
     "LlamaBidirectionalModel": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "nvidia/llama-nemotron-embed-1b-v2"), trust_remote_code=True
+        "nvidia/llama-nemotron-embed-1b-v2", trust_remote_code=True
     ),
-    "MistralModel": _HfExamplesInfo(os.path.join(models_path_prefix, "intfloat/e5-mistral-7b-instruct")),
+    "MistralModel": _HfExamplesInfo("intfloat/e5-mistral-7b-instruct"),
     "ModernBertModel": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "Alibaba-NLP/gte-modernbert-base"), trust_remote_code=True
+        "Alibaba-NLP/gte-modernbert-base", trust_remote_code=True
     ),
     "NomicBertModel": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "nomic-ai/nomic-embed-text-v2-moe"), trust_remote_code=True
+        "nomic-ai/nomic-embed-text-v2-moe", trust_remote_code=True
     ),
-    "Qwen2Model": _HfExamplesInfo(os.path.join(models_path_prefix, "ssmits/Qwen2-7B-Instruct-embed-base")),
-    "Qwen2ForRewardModel": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "Qwen/Qwen2.5-Math-RM-72B"),
-        max_transformers_version="4.53",
-        transformers_version_reason={
-            "hf": "HF model uses remote code that is not compatible with latest Transformers"  # noqa: E501
-        },
+    "Qwen2Model": _HfExamplesInfo("ssmits/Qwen2-7B-Instruct-embed-base"),
+    "RobertaModel": _HfExamplesInfo("sentence-transformers/stsb-roberta-base-v2"),
+    "RobertaForMaskedLM": _HfExamplesInfo("sentence-transformers/all-roberta-large-v1"),
+    "VoyageQwen3BidirectionalEmbedModel": _HfExamplesInfo(
+        "voyageai/voyage-4-nano", trust_remote_code=True
     ),
-    "Qwen2ForProcessRewardModel": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "Qwen/Qwen2.5-Math-PRM-7B"),
-        max_transformers_version="4.53",
-        transformers_version_reason={
-            "hf": "HF model uses remote code that is not compatible with latest Transformers"  # noqa: E501
-        },
-    ),
-    "RobertaModel": _HfExamplesInfo(os.path.join(models_path_prefix, "sentence-transformers/stsb-roberta-base-v2")),
-    "RobertaForMaskedLM": _HfExamplesInfo(os.path.join(models_path_prefix, "sentence-transformers/all-roberta-large-v1")),
-    "XLMRobertaModel": _HfExamplesInfo(os.path.join(models_path_prefix, "intfloat/multilingual-e5-small")),
-    "BertSpladeSparseEmbeddingModel": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "naver/splade-v3"),
-        hf_overrides={"architectures": ["BertSpladeSparseEmbeddingModel"]},
-    ),
+    "XLMRobertaModel": _HfExamplesInfo("intfloat/multilingual-e5-small"),
     # [Multimodal]
-    "CLIPModel": _HfExamplesInfo(os.path.join(models_path_prefix, "openai/clip-vit-base-patch32")),
-    "LlavaNextForConditionalGeneration": _HfExamplesInfo(os.path.join(models_path_prefix, "royokong/e5-v")),
-    "Phi3VForCausalLM": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "TIGER-Lab/VLM2Vec-Full"), trust_remote_code=True
+    "CLIPModel": _HfExamplesInfo("openai/clip-vit-base-patch32"),
+    "LlamaNemotronVLModel": _HfExamplesInfo(
+        "nvidia/llama-nemotron-embed-vl-1b-v2", trust_remote_code=True
     ),
-    "Qwen2VLForConditionalGeneration": _HfExamplesInfo(os.path.join(models_path_prefix, "MrLight/dse-qwen2-2b-mrl-v1")),
-    "SiglipModel": _HfExamplesInfo(os.path.join(models_path_prefix, "google/siglip-base-patch16-224")),
+    "LlavaNextForConditionalGeneration": _HfExamplesInfo("royokong/e5-v"),
+    "Phi3VForCausalLM": _HfExamplesInfo(
+        "TIGER-Lab/VLM2Vec-Full", trust_remote_code=True
+    ),
+    "Qwen2VLForConditionalGeneration": _HfExamplesInfo("MrLight/dse-qwen2-2b-mrl-v1"),
+    "SiglipModel": _HfExamplesInfo("google/siglip-base-patch16-224"),
     "PrithviGeoSpatialMAE": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "ibm-nasa-geospatial/Prithvi-EO-2.0-300M-TL-Sen1Floods11"),
+        "ibm-nasa-geospatial/Prithvi-EO-2.0-300M-TL-Sen1Floods11",
         dtype="float16",
         enforce_eager=True,
         require_embed_inputs=True,
@@ -592,7 +607,7 @@ _EMBEDDING_EXAMPLE_MODELS = {
         max_num_seqs=32,
     ),
     "Terratorch": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "ibm-nasa-geospatial/Prithvi-EO-2.0-300M-TL-Sen1Floods11"),
+        "ibm-nasa-geospatial/Prithvi-EO-2.0-300M-TL-Sen1Floods11",
         dtype="float16",
         enforce_eager=True,
         require_embed_inputs=True,
@@ -601,40 +616,100 @@ _EMBEDDING_EXAMPLE_MODELS = {
     ),
 }
 
+_LATE_INTERACTION_EXAMPLE_MODELS = {
+    # [Text-only]
+    "HF_ColBERT": _HfExamplesInfo("answerdotai/answerai-colbert-small-v1"),
+    "ColBERTModernBertModel": _HfExamplesInfo(
+        "lightonai/GTE-ModernColBERT-v1",
+        hf_overrides={"architectures": ["ColBERTModernBertModel"]},
+    ),
+    "ColBERTJinaRobertaModel": _HfExamplesInfo(
+        "jinaai/jina-colbert-v2",
+        trust_remote_code=True,
+        hf_overrides={"architectures": ["ColBERTJinaRobertaModel"]},
+    ),
+    # [Multimodal]
+    "ColModernVBertForRetrieval": _HfExamplesInfo(
+        "ModernVBERT/colmodernvbert-merged",
+    ),
+    "ColPaliForRetrieval": _HfExamplesInfo("vidore/colpali-v1.3-hf"),
+    "ColQwen3": _HfExamplesInfo(
+        "TomoroAI/tomoro-colqwen3-embed-4b", trust_remote_code=True
+    ),
+    "OpsColQwen3Model": _HfExamplesInfo(
+        "OpenSearch-AI/Ops-Colqwen3-4B", trust_remote_code=True
+    ),
+    "Qwen3VLNemotronEmbedModel": _HfExamplesInfo(
+        "nvidia/nemotron-colembed-vl-4b-v2",
+    ),
+}
+
+
+_REWARD_EXAMPLE_MODELS = {
+    "InternLM2ForRewardModel": _HfExamplesInfo(
+        "internlm/internlm2-1_8b-reward", trust_remote_code=True
+    ),
+    "Qwen2ForRewardModel": _HfExamplesInfo(
+        "Qwen/Qwen2.5-Math-RM-72B",
+        max_transformers_version="4.53",
+        transformers_version_reason={
+            "hf": "HF model uses remote code that is not compatible with latest Transformers"  # noqa: E501
+        },
+    ),
+    "Qwen2ForProcessRewardModel": _HfExamplesInfo(
+        "Qwen/Qwen2.5-Math-PRM-7B",
+        max_transformers_version="4.53",
+        transformers_version_reason={
+            "hf": "HF model uses remote code that is not compatible with latest Transformers"  # noqa: E501
+        },
+    ),
+}
+
+_TOKEN_CLASSIFICATION_EXAMPLE_MODELS = {
+    "BertForTokenClassification": _HfExamplesInfo("boltuix/NeuroBERT-NER"),
+    "ErnieForTokenClassification": _HfExamplesInfo(
+        "gyr66/Ernie-3.0-base-chinese-finetuned-ner"
+    ),
+    "ModernBertForTokenClassification": _HfExamplesInfo(
+        "disham993/electrical-ner-ModernBERT-base"
+    ),
+}
+
 _SEQUENCE_CLASSIFICATION_EXAMPLE_MODELS = {
-    # [Decoder-only]
-    "GPT2ForSequenceClassification": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "nie3e/sentiment-polish-gpt2-small")
-    ),
-    # [Cross-encoder]
     "BertForSequenceClassification": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "cross-encoder/ms-marco-MiniLM-L-6-v2")
+        "cross-encoder/ms-marco-MiniLM-L-6-v2"
     ),
-    "BertForTokenClassification": _HfExamplesInfo(os.path.join(models_path_prefix, "boltuix/NeuroBERT-NER")),
+    "ErnieForSequenceClassification": _HfExamplesInfo(
+        "Forrest20231206/ernie-3.0-base-zh-cls",
+    ),
+    "GPT2ForSequenceClassification": _HfExamplesInfo(
+        "nie3e/sentiment-polish-gpt2-small"
+    ),
     "GteNewForSequenceClassification": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "Alibaba-NLP/gte-multilingual-reranker-base"),
+        "Alibaba-NLP/gte-multilingual-reranker-base",
         trust_remote_code=True,
         hf_overrides={"architectures": ["GteNewForSequenceClassification"]},
     ),
+    "JambaForSequenceClassification": _HfExamplesInfo("ai21labs/Jamba-tiny-reward-dev"),
     "LlamaBidirectionalForSequenceClassification": _HfExamplesInfo(
         "nvidia/llama-nemotron-rerank-1b-v2", trust_remote_code=True
     ),
-    "ModernBertForSequenceClassification": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "Alibaba-NLP/gte-reranker-modernbert-base")
+    "LlamaNemotronVLForSequenceClassification": _HfExamplesInfo(
+        "nvidia/llama-nemotron-rerank-vl-1b-v2", trust_remote_code=True
     ),
-    "ModernBertForTokenClassification": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "disham993/electrical-ner-ModernBERT-base")
+    "ModernBertForSequenceClassification": _HfExamplesInfo(
+        "Alibaba-NLP/gte-reranker-modernbert-base"
     ),
     "RobertaForSequenceClassification": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "cross-encoder/quora-roberta-base")
+        "cross-encoder/quora-roberta-base"
     ),
-    "XLMRobertaForSequenceClassification": _HfExamplesInfo(os.path.join(models_path_prefix, "BAAI/bge-reranker-v2-m3")),
+    "XLMRobertaForSequenceClassification": _HfExamplesInfo("BAAI/bge-reranker-v2-m3"),
 }
 
 _AUTOMATIC_CONVERTED_MODELS = {
     # Use as_seq_cls_model for automatic conversion
     "GemmaForSequenceClassification": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "BAAI/bge-reranker-v2-gemma"),
+        "BAAI/bge-reranker-v2-gemma",
         hf_overrides={
             "architectures": ["GemmaForSequenceClassification"],
             "classifier_from_token": ["Yes"],
@@ -642,11 +717,11 @@ _AUTOMATIC_CONVERTED_MODELS = {
         },
     ),
     "LlamaForSequenceClassification": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "Skywork/Skywork-Reward-V2-Llama-3.2-1B")
+        "Skywork/Skywork-Reward-V2-Llama-3.2-1B"
     ),
-    "Qwen2ForSequenceClassification": _HfExamplesInfo(os.path.join(models_path_prefix, "jason9693/Qwen2.5-1.5B-apeach")),
+    "Qwen2ForSequenceClassification": _HfExamplesInfo("jason9693/Qwen2.5-1.5B-apeach"),
     "Qwen3ForSequenceClassification": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "tomaarsen/Qwen3-Reranker-0.6B-seq-cls")
+        "tomaarsen/Qwen3-Reranker-0.6B-seq-cls"
     ),
     "Qwen3ForTokenClassification": _HfExamplesInfo("bd2lcco/Qwen3-0.6B-finetuned"),
     "Qwen3VLForSequenceClassification": _HfExamplesInfo(
@@ -662,87 +737,104 @@ _AUTOMATIC_CONVERTED_MODELS = {
 
 _MULTIMODAL_EXAMPLE_MODELS = {
     # [Decoder-only]
-    "AriaForConditionalGeneration": _HfExamplesInfo(os.path.join(models_path_prefix, "rhymes-ai/Aria")),
+    "AriaForConditionalGeneration": _HfExamplesInfo("rhymes-ai/Aria"),
     "AudioFlamingo3ForConditionalGeneration": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "nvidia/audio-flamingo-3-hf"), min_transformers_version="5.0.0"
+        "nvidia/audio-flamingo-3-hf", min_transformers_version="5.0.0"
     ),
-    "AyaVisionForConditionalGeneration": _HfExamplesInfo(os.path.join(models_path_prefix, "CohereLabs/aya-vision-8b")),
-    "BagelForConditionalGeneration": _HfExamplesInfo(os.path.join(models_path_prefix, "ByteDance-Seed/BAGEL-7B-MoT")),
+    "MusicFlamingoForConditionalGeneration": _HfExamplesInfo(
+        "nvidia/music-flamingo-2601-hf", min_transformers_version="5.0.0.dev"
+    ),
+    "AyaVisionForConditionalGeneration": _HfExamplesInfo("CohereLabs/aya-vision-8b"),
+    "BagelForConditionalGeneration": _HfExamplesInfo("ByteDance-Seed/BAGEL-7B-MoT"),
     "BeeForConditionalGeneration": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "Open-Bee/Bee-8B-RL"),
+        "Open-Bee/Bee-8B-RL",
         trust_remote_code=True,
     ),
     "Blip2ForConditionalGeneration": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "Salesforce/blip2-opt-2.7b"),
-        extras={"6b": os.path.join(models_path_prefix, "Salesforce/blip2-opt-6.7b")},
+        "Salesforce/blip2-opt-2.7b",
+        extras={"6b": "Salesforce/blip2-opt-6.7b"},
     ),
-    "ChameleonForConditionalGeneration": _HfExamplesInfo(os.path.join(models_path_prefix, "facebook/chameleon-7b")),
+    "ChameleonForConditionalGeneration": _HfExamplesInfo("facebook/chameleon-7b"),
     "Cohere2VisionForConditionalGeneration": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "CohereLabs/command-a-vision-07-2025")
+        "CohereLabs/command-a-vision-07-2025"
     ),
     "DeepseekVLV2ForCausalLM": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "deepseek-ai/deepseek-vl2-tiny"),
-        extras={"fork": os.path.join(models_path_prefix, "Isotr0py/deepseek-vl2-tiny")},
+        "deepseek-ai/deepseek-vl2-tiny",
+        extras={"fork": "Isotr0py/deepseek-vl2-tiny"},
         max_transformers_version="4.48",
         transformers_version_reason={"hf": "HF model is not compatible."},
-        hf_overrides={"architectures": ["DeepseekVLV2ForCausalLM"]},
     ),
     "DeepseekOCRForCausalLM": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "deepseek-ai/DeepSeek-OCR"),
+        "deepseek-ai/DeepSeek-OCR",
+    ),
+    "DeepseekOCR2ForCausalLM": _HfExamplesInfo(
+        "deepseek-ai/DeepSeek-OCR-2",
     ),
     "DotsOCRForCausalLM": _HfExamplesInfo(
-       os.path.join(models_path_prefix,  "rednote-hilab/dots.ocr"), trust_remote_code=True
+        "rednote-hilab/dots.ocr", trust_remote_code=True
     ),
     "Eagle2_5_VLForConditionalGeneration": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "nvidia/Eagle2.5-8B"), trust_remote_code=True, is_available_online=False
+        "nvidia/Eagle2.5-8B", trust_remote_code=True, is_available_online=False
     ),
-    "Emu3ForConditionalGeneration": _HfExamplesInfo(os.path.join(models_path_prefix, "BAAI/Emu3-Chat-hf")),
+    "Emu3ForConditionalGeneration": _HfExamplesInfo("BAAI/Emu3-Chat-hf"),
     "Ernie4_5_VLMoeForConditionalGeneration": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "baidu/ERNIE-4.5-VL-28B-A3B-PT"),
+        "baidu/ERNIE-4.5-VL-28B-A3B-PT",
         trust_remote_code=True,
+        revision="refs/pr/17",
     ),
-    "FuyuForCausalLM": _HfExamplesInfo(os.path.join(models_path_prefix, "adept/fuyu-8b")),
-    "Gemma3ForConditionalGeneration": _HfExamplesInfo(os.path.join(models_path_prefix, "google/gemma-3-4b-it")),
-    "Gemma3nForConditionalGeneration": _HfExamplesInfo(os.path.join(models_path_prefix, "google/gemma-3n-E2B-it")),
+    "FireRedASR2ForConditionalGeneration": _HfExamplesInfo(
+        "allendou/FireRedASR2-LLM-vllm",
+    ),
+    "FunASRForConditionalGeneration": _HfExamplesInfo(
+        "allendou/Fun-ASR-Nano-2512-vllm",
+    ),
+    "FunAudioChatForConditionalGeneration": _HfExamplesInfo(
+        "funaudiochat", is_available_online=False
+    ),
+    "FuyuForCausalLM": _HfExamplesInfo("adept/fuyu-8b"),
+    "Gemma3ForConditionalGeneration": _HfExamplesInfo("google/gemma-3-4b-it"),
+    "Gemma3nForConditionalGeneration": _HfExamplesInfo("google/gemma-3n-E2B-it"),
     "GlmAsrForConditionalGeneration": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "zai-org/GLM-ASR-Nano-2512"),
-        trust_remote_code=True,
+        "zai-org/GLM-ASR-Nano-2512",
         min_transformers_version="5.0.0",
     ),
     "GraniteVision": _HfExamplesInfo("ibm-granite/granite-vision-3.3-2b"),
     "GraniteSpeechForConditionalGeneration": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "ibm-granite/granite-speech-3.3-2b")
+        "ibm-granite/granite-speech-3.3-2b"
     ),
     "GLM4VForCausalLM": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "zai-org/glm-4v-9b"),
+        "zai-org/glm-4v-9b",
         trust_remote_code=True,
         hf_overrides={"architectures": ["GLM4VForCausalLM"]},
     ),
-    "Glm4vForConditionalGeneration": _HfExamplesInfo(os.path.join(models_path_prefix, "zai-org/GLM-4.1V-9B-Thinking")),
-    "Glm4vMoeForConditionalGeneration": _HfExamplesInfo(os.path.join(models_path_prefix, "zai-org/GLM-4.5V")),
+    "Glm4vForConditionalGeneration": _HfExamplesInfo("zai-org/GLM-4.1V-9B-Thinking"),
+    "Glm4vMoeForConditionalGeneration": _HfExamplesInfo("zai-org/GLM-4.5V"),
     "GlmOcrForConditionalGeneration": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "zai-org/GLM-OCR"),
-        is_available_online=False,
+        "zai-org/GLM-OCR",
         min_transformers_version="5.1.0",
     ),
     "H2OVLChatModel": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "h2oai/h2ovl-mississippi-800m"),
+        "h2oai/h2ovl-mississippi-800m",
         trust_remote_code=True,
-        extras={"2b": os.path.join(models_path_prefix, "h2oai/h2ovl-mississippi-2b")},
+        extras={"2b": "h2oai/h2ovl-mississippi-2b"},
         max_transformers_version="4.48",
         transformers_version_reason={"hf": "HF model is not compatible."},
     ),
     "HCXVisionForCausalLM": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "naver-hyperclovax/HyperCLOVAX-SEED-Vision-Instruct-3B"),
+        "naver-hyperclovax/HyperCLOVAX-SEED-Vision-Instruct-3B",
+        trust_remote_code=True,
+    ),
+    "HCXVisionV2ForCausalLM": _HfExamplesInfo(
+        "naver-hyperclovax/HyperCLOVAX-SEED-Think-32B",
         trust_remote_code=True,
     ),
     "HunYuanVLForConditionalGeneration": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "tencent/HunyuanOCR"),
+        "tencent/HunyuanOCR",
         hf_overrides={"num_experts": 0},
     ),
     "Idefics3ForConditionalGeneration": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "HuggingFaceM4/Idefics3-8B-Llama3"),
-        extras={"tiny": os.path.join(models_path_prefix, "HuggingFaceTB/SmolVLM-256M-Instruct")},
+        "HuggingFaceM4/Idefics3-8B-Llama3",
+        extras={"tiny": "HuggingFaceTB/SmolVLM-256M-Instruct"},
     ),
     "IsaacForConditionalGeneration": _HfExamplesInfo(
         "PerceptronAI/Isaac-0.1",
@@ -750,35 +842,48 @@ _MULTIMODAL_EXAMPLE_MODELS = {
         extras={"0.2-2B-Preview": "PerceptronAI/Isaac-0.2-2B-Preview"},
     ),
     "InternS1ForConditionalGeneration": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "internlm/Intern-S1"), trust_remote_code=True
+        "internlm/Intern-S1", trust_remote_code=True
+    ),
+    "InternS1ProForConditionalGeneration": _HfExamplesInfo(
+        "internlm/Intern-S1-Pro",
+        trust_remote_code=True,
     ),
     "InternVLChatModel": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "OpenGVLab/InternVL2-1B"),
+        "OpenGVLab/InternVL2-1B",
         extras={
-            "2B": os.path.join(models_path_prefix, "OpenGVLab/InternVL2-2B"),
-            "3.0": os.path.join(models_path_prefix, "OpenGVLab/InternVL3-1B"),
-            "3.5-qwen3": os.path.join(models_path_prefix, "OpenGVLab/InternVL3_5-1B"),
-            "3.5-qwen3moe": os.path.join(models_path_prefix, "OpenGVLab/InternVL3_5-30B-A3B"),
-            "3.5-gptoss": os.path.join(models_path_prefix, "OpenGVLab/InternVL3_5-GPT-OSS-20B-A4B-Preview"),
+            "2B": "OpenGVLab/InternVL2-2B",
+            "3.0": "OpenGVLab/InternVL3-1B",
+            "3.5-qwen3": "OpenGVLab/InternVL3_5-1B",
+            "3.5-qwen3moe": "OpenGVLab/InternVL3_5-30B-A3B",
+            "3.5-gptoss": "OpenGVLab/InternVL3_5-GPT-OSS-20B-A4B-Preview",
         },
         trust_remote_code=True,
     ),
-    "InternVLForConditionalGeneration": _HfExamplesInfo(os.path.join(models_path_prefix, "OpenGVLab/InternVL3-1B-hf")),
+    "InternVLForConditionalGeneration": _HfExamplesInfo("OpenGVLab/InternVL3-1B-hf"),
     "KananaVForConditionalGeneration": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "kakaocorp/kanana-1.5-v-3b-instruct"),
+        "kakaocorp/kanana-1.5-v-3b-instruct",
         trust_remote_code=True,
     ),
     "KeyeForConditionalGeneration": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "Kwai-Keye/Keye-VL-8B-Preview"),
+        "Kwai-Keye/Keye-VL-8B-Preview",
         trust_remote_code=True,
     ),
     "KeyeVL1_5ForConditionalGeneration": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "Kwai-Keye/Keye-VL-1_5-8B"),
+        "Kwai-Keye/Keye-VL-1_5-8B",
+        trust_remote_code=True,
+    ),
+    "MoonshotKimiaForCausalLM": _HfExamplesInfo(
+        "moonshotai/Kimi-Audio-7B-Instruct",
+        tokenizer_mode="kimi_audio",
+        trust_remote_code=True,
+    ),
+    "KimiK25ForConditionalGeneration": _HfExamplesInfo(
+        "moonshotai/Kimi-K2.5",
         trust_remote_code=True,
     ),
     "KimiVLForConditionalGeneration": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "moonshotai/Kimi-VL-A3B-Instruct"),
-        extras={"thinking": os.path.join(models_path_prefix, "moonshotai/Kimi-VL-A3B-Thinking")},
+        "moonshotai/Kimi-VL-A3B-Instruct",
+        extras={"thinking": "moonshotai/Kimi-VL-A3B-Thinking"},
         trust_remote_code=True,
         max_transformers_version="4.53.3",
         transformers_version_reason={
@@ -789,136 +894,143 @@ _MULTIMODAL_EXAMPLE_MODELS = {
             )
         },
     ),
-    "KimiK25ForConditionalGeneration": _HfExamplesInfo(
-        "moonshotai/Kimi-K2.5",
-        trust_remote_code=True,
-        is_available_online=False,
-    ),
     "LightOnOCRForConditionalGeneration": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "lightonai/LightOnOCR-1B-1025")
+        "lightonai/LightOnOCR-1B-1025"
     ),
     "Lfm2VlForConditionalGeneration": _HfExamplesInfo(
         "LiquidAI/LFM2-VL-450M",
         min_transformers_version="5.0.0",
     ),
     "Llama4ForConditionalGeneration": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "meta-llama/Llama-4-Scout-17B-16E-Instruct"),
+        "meta-llama/Llama-4-Scout-17B-16E-Instruct",
         max_model_len=10240,
-        extras={"llama-guard-4": os.path.join(models_path_prefix, "meta-llama/Llama-Guard-4-12B")},
+        extras={"llama-guard-4": "meta-llama/Llama-Guard-4-12B"},
     ),
     "LlavaForConditionalGeneration": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "llava-hf/llava-1.5-7b-hf"),
+        "llava-hf/llava-1.5-7b-hf",
         extras={
-            "mistral": os.path.join(models_path_prefix, "mistral-community/pixtral-12b"),
-            "mistral-fp8": os.path.join(models_path_prefix, "nm-testing/pixtral-12b-FP8-dynamic"),
+            "mistral": "mistral-community/pixtral-12b",
+            "mistral-fp8": "nm-testing/pixtral-12b-FP8-dynamic",
         },
     ),
     "LlavaNextForConditionalGeneration": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "llava-hf/llava-v1.6-mistral-7b-hf")
+        "llava-hf/llava-v1.6-mistral-7b-hf"
     ),
     "LlavaNextVideoForConditionalGeneration": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "llava-hf/LLaVA-NeXT-Video-7B-hf")
+        "llava-hf/LLaVA-NeXT-Video-7B-hf"
     ),
     "LlavaOnevisionForConditionalGeneration": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "llava-hf/llava-onevision-qwen2-0.5b-ov-hf")
+        "llava-hf/llava-onevision-qwen2-0.5b-ov-hf"
     ),
     "MantisForConditionalGeneration": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "TIGER-Lab/Mantis-8B-siglip-llama3"),
+        "TIGER-Lab/Mantis-8B-siglip-llama3",
         max_transformers_version="4.48",
         transformers_version_reason={"hf": "HF model is not compatible."},
         hf_overrides={"architectures": ["MantisForConditionalGeneration"]},
     ),
     "MiDashengLMModel": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "mispeech/midashenglm-7b"), trust_remote_code=True
+        "mispeech/midashenglm-7b", trust_remote_code=True
     ),
-    "MiniCPMO": _HfExamplesInfo(os.path.join(models_path_prefix, "openbmb/MiniCPM-o-2_6"), trust_remote_code=True),
+    "MiniCPMO": _HfExamplesInfo("openbmb/MiniCPM-o-2_6", trust_remote_code=True),
     "MiniCPMV": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "openbmb/MiniCPM-Llama3-V-2_5"),
+        "openbmb/MiniCPM-Llama3-V-2_5",
         extras={
-            "2.6": os.path.join(models_path_prefix, "openbmb/MiniCPM-V-2_6"),
-            "4.0": os.path.join(models_path_prefix, "openbmb/MiniCPM-V-4"),
-            "4.5": os.path.join(models_path_prefix, "openbmb/MiniCPM-V-4_5"),
+            "2.6": "openbmb/MiniCPM-V-2_6",
+            "4.0": "openbmb/MiniCPM-V-4",
+            "4.5": "openbmb/MiniCPM-V-4_5",
         },
         trust_remote_code=True,
     ),
     "MiniMaxVL01ForConditionalGeneration": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "MiniMaxAI/MiniMax-VL-01"),
+        "MiniMaxAI/MiniMax-VL-01",
         trust_remote_code=True,
     ),
     "Mistral3ForConditionalGeneration": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "mistralai/Mistral-Small-3.1-24B-Instruct-2503"),
-        extras={"fp8": os.path.join(models_path_prefix, "nm-testing/Mistral-Small-3.1-24B-Instruct-2503-FP8-dynamic")},
+        "mistralai/Mistral-Small-3.1-24B-Instruct-2503",
+        extras={"fp8": "nm-testing/Mistral-Small-3.1-24B-Instruct-2503-FP8-dynamic"},
     ),
     "MolmoForCausalLM": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "allenai/Molmo-7B-D-0924"),
+        "allenai/Molmo-7B-D-0924",
         max_transformers_version="4.48",
         transformers_version_reason={
             "vllm": "Incorrectly-detected `tensorflow` import from processor."
         },
-        extras={"olmo": os.path.join(models_path_prefix, "allenai/Molmo-7B-O-0924")},
+        extras={"olmo": "allenai/Molmo-7B-O-0924"},
         trust_remote_code=True,
     ),
     "Molmo2ForConditionalGeneration": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "allenai/Molmo2-8B"),
+        "allenai/Molmo2-8B",
         extras={"olmo": "allenai/Molmo2-O-7B"},
         min_transformers_version="4.51",
         trust_remote_code=True,
         # required by current PrefixLM implementation
         max_num_batched_tokens=31872,
     ),
-    "NVLM_D": _HfExamplesInfo(os.path.join(models_path_prefix, "nvidia/NVLM-D-72B"), trust_remote_code=True),
+    "NVLM_D": _HfExamplesInfo("nvidia/NVLM-D-72B", trust_remote_code=True),
     "Llama_Nemotron_Nano_VL": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "nvidia/Llama-3.1-Nemotron-Nano-VL-8B-V1"),
+        "nvidia/Llama-3.1-Nemotron-Nano-VL-8B-V1",
         trust_remote_code=True,
     ),
     "NemotronH_Nano_VL_V2": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "nano_vl_dummy"), is_available_online=False, trust_remote_code=True
+        "nano_vl_dummy", is_available_online=False, trust_remote_code=True
     ),
     "OpenCUAForConditionalGeneration": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "xlangai/OpenCUA-7B"), trust_remote_code=True
+        "xlangai/OpenCUA-7B", trust_remote_code=True
+    ),
+    "OpenPanguVLForConditionalGeneration": _HfExamplesInfo(
+        "FreedomIntelligence/openPangu-VL-7B",
+        trust_remote_code=True,
+        max_model_len=4096,
+        enforce_eager=True,
     ),
     "Ovis": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "AIDC-AI/Ovis2-1B"),
+        "AIDC-AI/Ovis2-1B",
         trust_remote_code=True,
         max_transformers_version="4.53",
         transformers_version_reason={"hf": "HF model is not compatible"},
         extras={
-            "1.6-llama": os.path.join(models_path_prefix, "AIDC-AI/Ovis1.6-Llama3.2-3B"),
-            "1.6-gemma": os.path.join(models_path_prefix, "AIDC-AI/Ovis1.6-Gemma2-9B"),
+            "1.6-llama": "AIDC-AI/Ovis1.6-Llama3.2-3B",
+            "1.6-gemma": "AIDC-AI/Ovis1.6-Gemma2-9B",
         },
     ),
-    "Ovis2_5": _HfExamplesInfo(os.path.join(models_path_prefix, "AIDC-AI/Ovis2.5-2B"), trust_remote_code=True),
+    "Ovis2_5": _HfExamplesInfo("AIDC-AI/Ovis2.5-2B", trust_remote_code=True),
+    "Ovis2_6ForCausalLM": _HfExamplesInfo(
+        "AIDC-AI/Ovis2.6-2B", is_available_online=False, trust_remote_code=True
+    ),
+    "Ovis2_6_MoeForCausalLM": _HfExamplesInfo(
+        "AIDC-AI/Ovis2.6-30B-A3B", trust_remote_code=True
+    ),
     "PaddleOCRVLForConditionalGeneration": _HfExamplesInfo(
-       os.path.join(models_path_prefix,  "PaddlePaddle/PaddleOCR-VL"),
+        "PaddlePaddle/PaddleOCR-VL",
         trust_remote_code=True,
     ),
     "PaliGemmaForConditionalGeneration": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "google/paligemma-3b-mix-224"),
-        extras={"v2": os.path.join(models_path_prefix, "google/paligemma2-3b-ft-docci-448")},
+        "google/paligemma-3b-mix-224",
+        extras={"v2": "google/paligemma2-3b-ft-docci-448"},
     ),
     "Phi3VForCausalLM": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "microsoft/Phi-3-vision-128k-instruct"),
+        "microsoft/Phi-3-vision-128k-instruct",
         trust_remote_code=True,
         max_transformers_version="4.48",
         transformers_version_reason={
             "hf": "HF model use deprecated imports which have been removed."
         },  # noqa: E501
-        extras={"phi3.5": os.path.join(models_path_prefix, "microsoft/Phi-3.5-vision-instruct")},
+        extras={"phi3.5": "microsoft/Phi-3.5-vision-instruct"},
     ),
     "Phi4MMForCausalLM": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "microsoft/Phi-4-multimodal-instruct"), trust_remote_code=True
+        "microsoft/Phi-4-multimodal-instruct", trust_remote_code=True
     ),
     "PixtralForConditionalGeneration": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "mistralai/Pixtral-12B-2409"),
+        "mistralai/Pixtral-12B-2409",
         extras={
-            "mistral-large-3": os.path.join(models_path_prefix, "mistralai/Mistral-Large-3-675B-Instruct-2512-NVFP4"),
-            "ministral-3": os.path.join(models_path_prefix, "mistralai/Ministral-3-3B-Instruct-2512"),
+            "mistral-large-3": "mistralai/Mistral-Large-3-675B-Instruct-2512-NVFP4",
+            "ministral-3": "mistralai/Ministral-3-3B-Instruct-2512",
         },
         tokenizer_mode="mistral",
     ),
     "QwenVLForConditionalGeneration": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "Qwen/Qwen-VL"),
-        extras={"chat": os.path.join(models_path_prefix, "Qwen/Qwen-VL-Chat")},
+        "Qwen/Qwen-VL",
+        extras={"chat": "Qwen/Qwen-VL-Chat"},
         trust_remote_code=True,
         max_transformers_version="4.53.3",
         transformers_version_reason={
@@ -927,101 +1039,100 @@ _MULTIMODAL_EXAMPLE_MODELS = {
         hf_overrides={"architectures": ["QwenVLForConditionalGeneration"]},
     ),
     "Qwen2AudioForConditionalGeneration": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "Qwen/Qwen2-Audio-7B-Instruct")
+        "Qwen/Qwen2-Audio-7B-Instruct"
     ),
-    "Qwen2VLForConditionalGeneration": _HfExamplesInfo(os.path.join(models_path_prefix, "Qwen/Qwen2-VL-2B-Instruct")),
+    "Qwen2VLForConditionalGeneration": _HfExamplesInfo("Qwen/Qwen2-VL-2B-Instruct"),
     "Qwen2_5_VLForConditionalGeneration": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "Qwen/Qwen2.5-VL-3B-Instruct"),
+        "Qwen/Qwen2.5-VL-3B-Instruct",
         max_model_len=4096,
     ),
-    "Qwen2_5OmniModel": _HfExamplesInfo(os.path.join(models_path_prefix, "Qwen/Qwen2.5-Omni-3B")),
-    "Qwen2_5OmniForConditionalGeneration": _HfExamplesInfo(os.path.join(models_path_prefix, "Qwen/Qwen2.5-Omni-7B-AWQ")),
+    "Qwen2_5OmniModel": _HfExamplesInfo("Qwen/Qwen2.5-Omni-3B"),
+    "Qwen2_5OmniForConditionalGeneration": _HfExamplesInfo("Qwen/Qwen2.5-Omni-7B-AWQ"),
     "Qwen3VLForConditionalGeneration": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "Qwen/Qwen3-VL-4B-Instruct"),
+        "Qwen/Qwen3-VL-4B-Instruct",
         max_model_len=4096,
         min_transformers_version="4.57",
     ),
     "Qwen3VLMoeForConditionalGeneration": _HfExamplesInfo(
-       os.path.join(models_path_prefix,  "Qwen/Qwen3-VL-30B-A3B-Instruct"),
+        "Qwen/Qwen3-VL-30B-A3B-Instruct",
         max_model_len=4096,
         min_transformers_version="4.57",
     ),
     "Qwen3_5ForConditionalGeneration": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "Qwen/Qwen3.5-9B-Instruct"),
+        "Qwen/Qwen3.5-0.8B",
         max_model_len=4096,
-        min_transformers_version="5.1.0",
     ),
     "Qwen3_5MoeForConditionalGeneration": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "Qwen/Qwen3.5-35B-A3B-Instruct"),
+        "Qwen/Qwen3.5-35B-A3B",
         max_model_len=4096,
-        min_transformers_version="5.1.0",
-    ),
-    "Qwen3_5MTP": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "Qwen/Qwen3.5-9B-Instruct"),
-        speculative_model="Qwen/Qwen3.5-9B-Instruct",
-        min_transformers_version="5.1.0",
-    ),
-    "Qwen3_5MoeMTP": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "Qwen/Qwen3.5-35B-A3B-Instruct"),
-        speculative_model="Qwen/Qwen3.5-35B-A3B-Instruct",
-        min_transformers_version="5.1.0",
     ),
     "Qwen3OmniMoeForConditionalGeneration": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "Qwen/Qwen3-Omni-30B-A3B-Instruct"),
+        "Qwen/Qwen3-Omni-30B-A3B-Instruct",
         max_model_len=4096,
         min_transformers_version="4.57",
     ),
-    "RForConditionalGeneration": _HfExamplesInfo(os.path.join(models_path_prefix, "YannQi/R-4B"), trust_remote_code=True),
+    "Qwen3ASRForConditionalGeneration": _HfExamplesInfo(
+        "Qwen/Qwen3-ASR-0.6B",
+        max_model_len=4096,
+        min_transformers_version="4.57",
+    ),
+    "Qwen3ASRRealtimeGeneration": _HfExamplesInfo(
+        "Qwen/Qwen3-ASR-0.6B",
+        max_model_len=4096,
+        min_transformers_version="4.57",
+        hf_overrides={"architectures": ["Qwen3ASRRealtimeGeneration"]},
+    ),
+    "RForConditionalGeneration": _HfExamplesInfo("YannQi/R-4B", trust_remote_code=True),
     "SkyworkR1VChatModel": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "Skywork/Skywork-R1V-38B"), trust_remote_code=True
+        "Skywork/Skywork-R1V-38B", trust_remote_code=True
     ),
     "SmolVLMForConditionalGeneration": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "HuggingFaceTB/SmolVLM2-2.2B-Instruct")
+        "HuggingFaceTB/SmolVLM2-2.2B-Instruct"
     ),
     "Step3VLForConditionalGeneration": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "stepfun-ai/step3"), trust_remote_code=True
+        "stepfun-ai/step3", trust_remote_code=True
     ),
     "StepVLForConditionalGeneration": _HfExamplesInfo(
         "stepfun-ai/Step3-VL-10B", trust_remote_code=True
     ),
     "UltravoxModel": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "fixie-ai/ultravox-v0_5-llama-3_2-1b"),
+        "fixie-ai/ultravox-v0_5-llama-3_2-1b",
         trust_remote_code=True,
     ),
-    "TarsierForConditionalGeneration": _HfExamplesInfo(os.path.join(models_path_prefix, "omni-research/Tarsier-7b")),
+    "TarsierForConditionalGeneration": _HfExamplesInfo("omni-research/Tarsier-7b"),
     "Tarsier2ForConditionalGeneration": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "omni-research/Tarsier2-Recap-7b"),
+        "omni-research/Tarsier2-Recap-7b",
         hf_overrides={
-            "architectures": [os.path.join(models_path_prefix, "Tarsier2ForConditionalGeneration")],
+            "architectures": ["Tarsier2ForConditionalGeneration"],
             "model_type": "tarsier2",
         },
     ),
     "VoxtralForConditionalGeneration": _HfExamplesInfo(
         "mistralai/Voxtral-Mini-3B-2507",
-        # disable this temporarily until we support HF format
-        is_available_online=False,
+        tokenizer_mode="mistral",
     ),
-    "VoxtralStreamingGeneration": _HfExamplesInfo(
-        "<place-holder>",
-        # disable this temporarily until we support HF format
-        is_available_online=False,
+    "VoxtralRealtimeGeneration": _HfExamplesInfo(
+        "mistralai/Voxtral-Mini-4B-Realtime-2602",
+        enforce_eager=True,
+        tokenizer_mode="mistral",
     ),
     # [Encoder-decoder]
     "NemotronParseForConditionalGeneration": _HfExamplesInfo(
         "nvidia/NVIDIA-Nemotron-Parse-v1.1", trust_remote_code=True
     ),
     "WhisperForConditionalGeneration": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "openai/whisper-large-v3-turbo"),
-        extras={"v3": os.path.join(models_path_prefix, "openai/whisper-large-v3")},
+        "openai/whisper-large-v3-turbo",
+        extras={"v3": "openai/whisper-large-v3"},
     ),
     # [Cross-encoder]
-    "JinaVLForRanking": _HfExamplesInfo(os.path.join(models_path_prefix, "jinaai/jina-reranker-m0")),
+    "JinaVLForRanking": _HfExamplesInfo("jinaai/jina-reranker-m0"),
 }
 
 
 _SPECULATIVE_DECODING_EXAMPLE_MODELS = {
+    # [Medusa]
     "MedusaModel": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "JackFram/llama-68m"), speculative_model=os.path.join(models_path_prefix, "abhigoyal/vllm-medusa-llama-68m-random")
+        "JackFram/llama-68m", speculative_model="abhigoyal/vllm-medusa-llama-68m-random"
     ),
     # Temporarily disabled.
     # TODO(woosuk): Re-enable this once the MLP Speculator is supported in V1.
@@ -1029,68 +1140,95 @@ _SPECULATIVE_DECODING_EXAMPLE_MODELS = {
     #     "JackFram/llama-160m",
     #     speculative_model="ibm-ai-platform/llama-160m-accelerator"
     # ),
-    "DeepSeekMTPModel": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "luccafong/deepseek_mtp_main_random"),
-        speculative_model=os.path.join(models_path_prefix, "luccafong/deepseek_mtp_draft_random"),
-        trust_remote_code=True,
-    ),
+    # [Eagle]
     "EagleDeepSeekMTPModel": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "eagle618/deepseek-v3-random"),
-        speculative_model=os.path.join(models_path_prefix, "eagle618/eagle-deepseek-v3-random"),
+        "eagle618/deepseek-v3-random",
+        speculative_model="eagle618/eagle-deepseek-v3-random",
         trust_remote_code=True,
     ),
     "EagleLlamaForCausalLM": _HfExamplesInfo(
-       os.path.join(models_path_prefix,  "meta-llama/Meta-Llama-3-8B-Instruct"),
+        "meta-llama/Meta-Llama-3-8B-Instruct",
         trust_remote_code=True,
-        speculative_model=os.path.join(models_path_prefix, "yuhuili/EAGLE-LLaMA3-Instruct-8B"),
-        tokenizer=os.path.join(models_path_prefix, "meta-llama/Meta-Llama-3-8B-Instruct"),
+        speculative_model="yuhuili/EAGLE-LLaMA3-Instruct-8B",
+        tokenizer="meta-llama/Meta-Llama-3-8B-Instruct",
+    ),
+    "Eagle3DeepseekV2ForCausalLM": _HfExamplesInfo(
+        "moonshotai/Kimi-K2.5",
+        trust_remote_code=True,
+        speculative_model="AQ-MedAI/Kimi-K25-eagle3",
+        tokenizer="moonshotai/Kimi-K2.5",
+    ),
+    "Eagle3DeepseekV3ForCausalLM": _HfExamplesInfo(
+        "moonshotai/Kimi-K2.5",
+        trust_remote_code=True,
+        speculative_model="AQ-MedAI/Kimi-K25-eagle3",
+        tokenizer="moonshotai/Kimi-K2.5",
     ),
     "Eagle3LlamaForCausalLM": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "meta-llama/Llama-3.1-8B-Instruct"),
+        "meta-llama/Llama-3.1-8B-Instruct",
         trust_remote_code=True,
-        speculative_model=os.path.join(models_path_prefix, "yuhuili/EAGLE3-LLaMA3.1-Instruct-8B"),
-        tokenizer=os.path.join(models_path_prefix, "meta-llama/Llama-3.1-8B-Instruct"),
+        speculative_model="yuhuili/EAGLE3-LLaMA3.1-Instruct-8B",
+        tokenizer="meta-llama/Llama-3.1-8B-Instruct",
         use_original_num_layers=True,
         max_model_len=10240,
     ),
     "EagleMistralLarge3ForCausalLM": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "mistralai/Mistral-Large-3-675B-Instruct-2512"),
-        speculative_model=os.path.join(models_path_prefix, "mistralai/Mistral-Large-3-675B-Instruct-2512-Eagle"),
+        "mistralai/Mistral-Large-3-675B-Instruct-2512",
+        speculative_model="mistralai/Mistral-Large-3-675B-Instruct-2512-Eagle",
         # TODO: revert once figuring out OOM in CI
         is_available_online=False,
     ),
     "LlamaForCausalLMEagle3": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "Qwen/Qwen3-8B"),
+        "Qwen/Qwen3-8B",
         trust_remote_code=True,
-        speculative_model=os.path.join(models_path_prefix, "AngelSlim/Qwen3-8B_eagle3"),
-        tokenizer=os.path.join(models_path_prefix, "Qwen/Qwen3-8B"),
+        speculative_model="AngelSlim/Qwen3-8B_eagle3",
+        tokenizer="Qwen/Qwen3-8B",
         use_original_num_layers=True,
     ),
     "EagleLlama4ForCausalLM": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "morgendave/EAGLE-Llama-4-Scout-17B-16E-Instruct"),
+        "morgendave/EAGLE-Llama-4-Scout-17B-16E-Instruct",
         trust_remote_code=True,
-        speculative_model=os.path.join(models_path_prefix, "morgendave/EAGLE-Llama-4-Scout-17B-16E-Instruct"),
-        tokenizer=os.path.join(models_path_prefix, "meta-llama/Llama-4-Scout-17B-16E-Instruct"),
+        speculative_model="morgendave/EAGLE-Llama-4-Scout-17B-16E-Instruct",
+        tokenizer="meta-llama/Llama-4-Scout-17B-16E-Instruct",
     ),
     "EagleMiniCPMForCausalLM": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "openbmb/MiniCPM-1B-sft-bf16"),
+        "openbmb/MiniCPM-1B-sft-bf16",
         trust_remote_code=True,
-        speculative_model=os.path.join(models_path_prefix, "openbmb/MiniCPM-2B-sft-bf16"),
-        speculative_method=os.path.join(models_path_prefix, "eagle"),
-        tokenizer=os.path.join(models_path_prefix, "openbmb/MiniCPM-2B-sft-bf16"),
+        speculative_model="openbmb/MiniCPM-2B-sft-bf16",
+        speculative_method="eagle",
+        tokenizer="openbmb/MiniCPM-2B-sft-bf16",
+    ),
+    "Eagle3Qwen2_5vlForCausalLM": _HfExamplesInfo(
+        "Qwen/Qwen2.5-VL-7B-Instruct",
+        speculative_model="Rayzl/qwen2.5-vl-7b-eagle3-sgl",
+    ),
+    "Eagle3Qwen3vlForCausalLM": _HfExamplesInfo(
+        "Qwen/Qwen3-VL-8B-Instruct",
+        speculative_model="taobao-mnn/Qwen3-VL-8B-Instruct-Eagle3",
+    ),
+    # [MTP]
+    "DeepSeekMTPModel": _HfExamplesInfo(
+        "luccafong/deepseek_mtp_main_random",
+        speculative_model="luccafong/deepseek_mtp_draft_random",
+        trust_remote_code=True,
     ),
     "ErnieMTPModel": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "baidu/ERNIE-4.5-21B-A3B-PT"),
+        "baidu/ERNIE-4.5-21B-A3B-PT",
         trust_remote_code=True,
-        speculative_model=os.path.join(models_path_prefix, "baidu/ERNIE-4.5-21B-A3B-PT"),
+        speculative_model="baidu/ERNIE-4.5-21B-A3B-PT",
     ),
     "ExaoneMoeMTP": _HfExamplesInfo(
         "LGAI-EXAONE/K-EXAONE-236B-A23B",
         speculative_model="LGAI-EXAONE/K-EXAONE-236B-A23B",
         min_transformers_version="5.1.0",
+        enable_prefix_caching=False,
+    ),
+    "ExtractHiddenStatesModel": _HfExamplesInfo(
+        "Qwen/Qwen3-8B",
+        speculative_method="extract_hidden_states",
     ),
     "Glm4MoeMTPModel": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "zai-org/GLM-4.5"),
+        "zai-org/GLM-4.5",
         speculative_model="zai-org/GLM-4.5",
     ),
     "Glm4MoeLiteMTPModel": _HfExamplesInfo(
@@ -1105,67 +1243,82 @@ _SPECULATIVE_DECODING_EXAMPLE_MODELS = {
         min_transformers_version="5.1.0",
     ),
     "LongCatFlashMTPModel": _HfExamplesInfo(
-        os.path.join(models_path_prefix, os.path.join(models_path_prefix, "meituan-longcat/LongCat-Flash-Chat")),
+        "meituan-longcat/LongCat-Flash-Chat",
         trust_remote_code=True,
-        speculative_model=os.path.join(models_path_prefix, "meituan-longcat/LongCat-Flash-Chat"),
+        speculative_model="meituan-longcat/LongCat-Flash-Chat",
     ),
     "MiMoMTPModel": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "XiaomiMiMo/MiMo-7B-RL"),
+        "XiaomiMiMo/MiMo-7B-RL",
         trust_remote_code=True,
-        speculative_model=os.path.join(models_path_prefix, "XiaomiMiMo/MiMo-7B-RL"),
+        speculative_model="XiaomiMiMo/MiMo-7B-RL",
     ),
-    "Eagle3Qwen2_5vlForCausalLM": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "Qwen/Qwen2.5-VL-7B-Instruct"),
-        speculative_model=os.path.join(models_path_prefix, "Rayzl/qwen2.5-vl-7b-eagle3-sgl"),
+    "NemotronHMTPModel": _HfExamplesInfo(
+        "nvidia/Nemotron-Super-Placeholder",
+        speculative_model="nvidia/Nemotron-Super-Placeholder",
+        is_available_online=False,
     ),
-    "Eagle3Qwen3vlForCausalLM": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "Qwen/Qwen3-VL-8B-Instruct"),
-        speculative_model=os.path.join(models_path_prefix, "taobao-mnn/Qwen3-VL-8B-Instruct-Eagle3"),
+    "OpenPanguMTPModel": _HfExamplesInfo(
+        "FreedomIntelligence/openPangu-Ultra-MoE-718B-V1.1",
+        trust_remote_code=True,
+        is_available_online=False,
     ),
     "Qwen3NextMTP": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "Qwen/Qwen3-Next-80B-A3B-Instruct"), min_transformers_version="4.56.3"
+        "Qwen/Qwen3-Next-80B-A3B-Instruct", min_transformers_version="4.56.3"
+    ),
+    "Qwen3_5MTP": _HfExamplesInfo(
+        "Qwen/Qwen3.5-0.8B",
+        speculative_model="Qwen/Qwen3.5-0.8B",
+    ),
+    "Qwen3_5MoeMTP": _HfExamplesInfo(
+        "Qwen/Qwen3.5-35B-A3B",
+        speculative_model="Qwen/Qwen3.5-35B-A3B",
     ),
     "Step3p5MTP": _HfExamplesInfo(
         "stepfun-ai/Step-3.5-Flash",
-        trust_remote_code=True,
         speculative_model="stepfun-ai/Step-3.5-Flash",
+        use_original_num_layers=True,
+        # Initialize at least one MoE layer
+        hf_overrides={"num_hidden_layers": 4},
         is_available_online=False,
     ),
 }
 
 _TRANSFORMERS_BACKEND_MODELS = {
     "TransformersEmbeddingModel": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "BAAI/bge-base-en-v1.5"), min_transformers_version="5.0.0"
+        "BAAI/bge-base-en-v1.5", min_transformers_version="5.0.0"
     ),
     "TransformersForSequenceClassification": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "papluca/xlm-roberta-base-language-detection"),
+        "papluca/xlm-roberta-base-language-detection",
         min_transformers_version="5.0.0",
     ),
     "TransformersForCausalLM": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "hmellor/Ilama-3.2-1B"), trust_remote_code=True
+        "hmellor/Ilama-3.2-1B", trust_remote_code=True
     ),
-    "TransformersMultiModalForCausalLM": _HfExamplesInfo(os.path.join(models_path_prefix, "BAAI/Emu3-Chat-hf")),
+    "TransformersMultiModalForCausalLM": _HfExamplesInfo("BAAI/Emu3-Chat-hf"),
     "TransformersMoEForCausalLM": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "allenai/OLMoE-1B-7B-0924"), min_transformers_version="5.0.0"
+        "allenai/OLMoE-1B-7B-0924", min_transformers_version="5.0.0"
     ),
     "TransformersMultiModalMoEForCausalLM": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "Qwen/Qwen3-VL-30B-A3B-Instruct"), min_transformers_version="5.0.0"
+        "Qwen/Qwen3-VL-30B-A3B-Instruct", min_transformers_version="5.0.0"
     ),
     "TransformersMoEEmbeddingModel": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "Qwen/Qwen3-30B-A3B"), min_transformers_version="5.0.0"
+        "Qwen/Qwen3-30B-A3B", min_transformers_version="5.0.0"
     ),
     "TransformersMoEForSequenceClassification": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "Qwen/Qwen3-30B-A3B"), min_transformers_version="5.0.0"
+        "Qwen/Qwen3-30B-A3B", min_transformers_version="5.0.0"
     ),
-    "TransformersMultiModalEmbeddingModel": _HfExamplesInfo(os.path.join(models_path_prefix, "google/gemma-3-4b-it")),
+    "TransformersMultiModalEmbeddingModel": _HfExamplesInfo("google/gemma-3-4b-it"),
     "TransformersMultiModalForSequenceClassification": _HfExamplesInfo(
-        os.path.join(models_path_prefix, "google/gemma-3-4b-it")
+        "google/gemma-3-4b-it"
     ),
 }
 
 _EXAMPLE_MODELS = {
     **_TEXT_GENERATION_EXAMPLE_MODELS,
     **_EMBEDDING_EXAMPLE_MODELS,
+    **_LATE_INTERACTION_EXAMPLE_MODELS,
+    **_REWARD_EXAMPLE_MODELS,
+    **_TOKEN_CLASSIFICATION_EXAMPLE_MODELS,
     **_SEQUENCE_CLASSIFICATION_EXAMPLE_MODELS,
     **_MULTIMODAL_EXAMPLE_MODELS,
     **_SPECULATIVE_DECODING_EXAMPLE_MODELS,

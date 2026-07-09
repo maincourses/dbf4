@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
-import os
 import pytest
 import torch.nn.functional as F
 from PIL import Image
@@ -10,7 +9,7 @@ from vllm.assets.base import get_vllm_public_assets
 from vllm.assets.image import VLM_IMAGES_DIR
 
 from ....conftest import IMAGE_ASSETS, HfRunner, PromptImageInput, VllmRunner
-from ....utils import large_gpu_test, models_path_prefix
+from ....utils import large_gpu_test
 from ...utils import check_embeddings_close
 
 HF_TEXT_PROMPTS = [
@@ -29,7 +28,7 @@ HF_IMAGE_PROMPTS = IMAGE_ASSETS.prompts(
     }
 )
 
-MODELS = [os.path.join(models_path_prefix, "TIGER-Lab/VLM2Vec-Full")]
+MODELS = ["TIGER-Lab/VLM2Vec-Full"]
 
 
 def _run_test(

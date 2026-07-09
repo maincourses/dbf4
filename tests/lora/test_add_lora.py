@@ -3,7 +3,6 @@
 import asyncio
 import time
 
-import os
 import pytest
 
 from vllm.engine.arg_utils import AsyncEngineArgs
@@ -13,11 +12,9 @@ from vllm.entrypoints.openai.api_server import (
 from vllm.inputs import TextPrompt
 from vllm.lora.request import LoRARequest
 from vllm.sampling_params import SamplingParams
-
 from vllm.utils.async_utils import merge_async_iterators
-from ..utils import models_path_prefix
 
-MODEL_PATH = os.path.join(models_path_prefix, "zai-org/chatglm3-6b")
+MODEL_PATH = "zai-org/chatglm3-6b"
 LORA_RANK = 64
 DEFAULT_MAX_LORAS = 4 * 3
 

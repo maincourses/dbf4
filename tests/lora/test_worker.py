@@ -13,16 +13,15 @@ from vllm.config import (
     ParallelConfig,
     SchedulerConfig,
     VllmConfig,
+    set_current_vllm_config,
 )
 from vllm.config.load import LoadConfig
 from vllm.config.lora import LoRAConfig
 from vllm.lora.model_manager import LoRAMapping
 from vllm.lora.request import LoRARequest
-
 from vllm.v1.worker.gpu_worker import Worker
-from ..utils import models_path_prefix
 
-MODEL_PATH = os.path.join(models_path_prefix, "Qwen/Qwen3-0.6B")
+MODEL_PATH = "Qwen/Qwen3-0.6B"
 NUM_LORAS = 16
 
 
@@ -65,7 +64,6 @@ def test_worker_apply_lora(qwen3_lora_files):
         device_config=DeviceConfig("cuda"),
         cache_config=CacheConfig(
             block_size=16,
-            swap_space=0,
             cache_dtype="auto",
         ),
         lora_config=LoRAConfig(
@@ -79,8 +77,9 @@ def test_worker_apply_lora(qwen3_lora_files):
         distributed_init_method=f"file://{tempfile.mkstemp()[1]}",
     )
 
-    worker.init_device()
-    worker.load_model()
+    with set_current_vllm_config(vllm_config):
+        worker.init_device()
+        worker.load_model()
 
     set_active_loras(worker, [])
     assert worker.list_loras() == set()

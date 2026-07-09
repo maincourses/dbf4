@@ -7,8 +7,6 @@ from vllm import _custom_ops as ops
 from vllm.triton_utils import triton
 from vllm.utils.math_utils import round_up
 
-import vllm.envs as envs
-
 
 def moe_align_block_size(
     topk_ids: torch.Tensor,
@@ -17,8 +15,6 @@ def moe_align_block_size(
     expert_map: torch.Tensor | None = None,
     pad_sorted_ids: bool = False,
     ignore_invalid_experts: bool = False,
-    num_token: int | None = None,
-    expert_mask: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     Aligns the token distribution across experts to be compatible with block
@@ -75,78 +71,31 @@ def moe_align_block_size(
     - The padding ensures that the total number of tokens is now divisible
         by block_size for proper block matrix operations.
     """
-    if num_token:
-        if num_token < block_size:
-            max_num_tokens_padded = min(topk_ids.numel() * block_size, topk_ids.numel() + num_experts * (block_size - 1))
-        else:
-            max_num_tokens_padded = topk_ids.numel() + num_experts * (block_size - 1)
-        sorted_ids = torch.full((max_num_tokens_padded,), fill_value=topk_ids.numel(), dtype=torch.int32, device=topk_ids.device)
-    else:
-        max_num_tokens_padded = topk_ids.numel() + num_experts * (block_size - 1)
-        if pad_sorted_ids:
-            max_num_tokens_padded = round_up(max_num_tokens_padded, block_size)
-        if topk_ids.numel() < num_experts:
-            max_num_tokens_padded = min(
-                topk_ids.numel() * block_size, max_num_tokens_padded
-            )
-        sorted_ids = torch.empty(
-            (max_num_tokens_padded,), dtype=torch.int32, device=topk_ids.device
+    max_num_tokens_padded = topk_ids.numel() + num_experts * (block_size - 1)
+    if pad_sorted_ids:
+        max_num_tokens_padded = round_up(max_num_tokens_padded, block_size)
+    if topk_ids.numel() < num_experts:
+        max_num_tokens_padded = min(
+            topk_ids.numel() * block_size, max_num_tokens_padded
         )
-        if not envs.VLLM_USE_LIGHTOP_FILL_MOE_ALIGN:
-            sorted_ids.fill_(topk_ids.numel())
+    sorted_ids = torch.empty(
+        (max_num_tokens_padded,), dtype=torch.int32, device=topk_ids.device
+    )
     max_num_m_blocks = triton.cdiv(max_num_tokens_padded, block_size)
-    if expert_map is not None:
-        expert_ids = torch.zeros(
-            (max_num_m_blocks,), dtype=torch.int32, device=topk_ids.device
-        )
-    else:
-        expert_ids = torch.empty(
-            (max_num_m_blocks,), dtype=torch.int32, device=topk_ids.device
-        )
+    expert_ids = torch.empty(
+        (max_num_m_blocks,), dtype=torch.int32, device=topk_ids.device
+    )
     num_tokens_post_pad = torch.empty((1), dtype=torch.int32, device=topk_ids.device)
-    is_fuse_fill = envs.VLLM_USE_LIGHTOP_FILL_MOE_ALIGN
 
-    if envs.VLLM_USE_LIGHTOP or expert_mask is not None:
-        from lightop import op as op
-        op.moe_align_block_size(
-            topk_ids, 
-            num_experts, 
-            block_size, 
-            sorted_ids, 
-            expert_ids, 
-            num_tokens_post_pad,
-            expert_map = expert_map, 
-            expert_mask = expert_mask, 
-            num_local_tokens = None, 
-            Is_fuse_fill = is_fuse_fill,
-        )
-    else:
-        if envs.VLLM_USE_LIGHTOP_MOE_ALIGN:
-            from lightop import op as op
-            op.moe_align_block_size(
-                topk_ids, 
-                num_experts, 
-                block_size, 
-                sorted_ids, 
-                expert_ids, 
-                num_tokens_post_pad,
-                expert_map = None, 
-                expert_mask = None, 
-                num_local_tokens = None, 
-                Is_fuse_fill = is_fuse_fill,
-            )
-        else:
-            ops.moe_align_block_size(
-                topk_ids,
-                num_experts,
-                block_size,
-                sorted_ids,
-                expert_ids,
-                num_tokens_post_pad,
-                expert_map if ignore_invalid_experts else None,
-            )
-        # if expert_map is not None:
-        #     expert_ids = expert_map[expert_ids]
+    ops.moe_align_block_size(
+        topk_ids,
+        num_experts,
+        block_size,
+        sorted_ids,
+        expert_ids,
+        num_tokens_post_pad,
+        expert_map if ignore_invalid_experts else None,
+    )
 
     if expert_map is not None and not ignore_invalid_experts:
         expert_ids = expert_map[expert_ids]

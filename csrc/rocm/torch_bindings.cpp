@@ -20,6 +20,11 @@ TORCH_LIBRARY_EXPAND(TORCH_EXTENSION_NAME, rocm_ops) {
       "Tensor");
   rocm_ops.impl("LLMM1", torch::kCUDA, &LLMM1);
 
+  rocm_ops.def(
+      "LLMM1TwoWeights(Tensor in_a0, Tensor in_a1, Tensor in_b, "
+      "int rows_per_block) -> Tensor");
+  rocm_ops.impl("LLMM1TwoWeights", torch::kCUDA, &LLMM1TwoWeights);
+
   // Custom gemm op for skinny matrix-matrix multiplication
   rocm_ops.def(
       "wvSplitK(Tensor in_a, Tensor in_b, Tensor? in_bias, int CuCount) -> "

@@ -21,14 +21,13 @@ from vllm.model_executor.layers.batch_invariant import (
     vllm_is_batch_invariant,
 )
 from vllm.platforms.interface import DeviceCapability
+from vllm.utils.platform_utils import num_compute_units
 from vllm.v1.attention.backend import (
     AttentionCGSupport,
     AttentionLayer,
     AttentionType,
     MultipleOf,
 )
-from vllm.platforms import current_platform
-from vllm.platforms.rocm import get_gcn_arch_name
 from vllm.v1.attention.backends.utils import (
     reshape_attn_output_for_spec_decode,
     reshape_query_for_spec_decode,
@@ -40,10 +39,8 @@ from vllm.v1.attention.ops.flashmla import (
     get_mla_metadata,
     get_mla_metadata_dense_fp8,
     is_flashmla_dense_supported,
-    flash_mla_with_kvcache_fp8_with_cat
 )
 from vllm.v1.kv_cache_interface import AttentionSpec
-from vllm import envs
 
 logger = init_logger(__name__)
 
@@ -52,6 +49,7 @@ class FlashMLABackend(MLACommonBackend):
     supported_dtypes: ClassVar[list[torch.dtype]] = [torch.float16, torch.bfloat16]
     supported_kv_cache_dtypes: ClassVar[list[CacheDType]] = [
         "auto",
+        "float16",
         "bfloat16",
         "fp8",
         "fp8_e4m3",
@@ -83,7 +81,7 @@ class FlashMLABackend(MLACommonBackend):
         head_size: int,
         dtype: torch.dtype,
         kv_cache_dtype: CacheDType | None,
-        block_size: int,
+        block_size: int | None,
         use_mla: bool,
         has_sink: bool,
         use_sparse: bool,
@@ -134,8 +132,7 @@ class FlashMLAMetadataBuilder(MLACommonMetadataBuilder[FlashMLAMetadata]):
         self.cg_buf_num_splits = None
         self.is_fp8_kvcache = vllm_config.cache_config.cache_dtype.startswith("fp8")
 
-        device_properties = torch.cuda.get_device_properties(self.device)
-        num_sms = device_properties.multi_processor_count
+        num_sms = num_compute_units(self.device.index)
 
         if self.compilation_config.cudagraph_mode.has_full_cudagraphs():
             self.cg_buf_tile_scheduler_metadata = torch.zeros(
@@ -238,7 +235,7 @@ class FlashMLAImpl(MLACommonImpl[FlashMLAMetadata]):
                 "FlashMLAImpl"
             )
 
-    def _forward_decode(
+    def forward_mqa(
         self,
         q: torch.Tensor | tuple[torch.Tensor, torch.Tensor],
         kv_c_and_k_pe_cache: torch.Tensor,
@@ -249,43 +246,8 @@ class FlashMLAImpl(MLACommonImpl[FlashMLAMetadata]):
         assert kv_c_and_k_pe_cache.numel() > 0
         assert attn_metadata.decode is not None
 
-        if isinstance(q, tuple):
-            q_nope, q_pe = q
-            if envs.VLLM_USE_CAT_MLA and self.kv_cache_dtype.startswith("fp8") and get_gcn_arch_name() == "gfx938": 
-                assert isinstance(q_nope, torch.Tensor)
-                assert isinstance(q_pe, torch.Tensor)
-                
-                num_decodes = attn_metadata.num_decodes
-                q_nope = reshape_query_for_spec_decode(q_nope, num_decodes)
-                q_pe = reshape_query_for_spec_decode(q_pe, num_decodes)
-                scheduler_metadata = attn_metadata.decode.scheduler_metadata
-                
-                assert q_nope.shape[0] == num_decodes                
-                o, lse = flash_mla_with_kvcache_fp8_with_cat(
-                    q_nope=q_nope,
-                    q_pe=q_pe,
-                    k_cache=kv_c_and_k_pe_cache.unsqueeze(-2).view(torch.float8_e4m3fn),  # Add head dim of 1
-                    block_table=attn_metadata.decode.block_table,
-                    cache_seqlens=attn_metadata.decode.seq_lens,
-                    head_dim_v=self.kv_lora_rank,
-                    tile_scheduler_metadata=scheduler_metadata.tile_scheduler_metadata,
-                    num_splits=scheduler_metadata.num_splits,
-                    softmax_scale=self.scale,
-                    causal=True,
-                    descale_q=layer._q_scale.reshape(1),
-                    descale_k=layer._k_scale.reshape(1),          
-                )                
-                o = reshape_attn_output_for_spec_decode(o)
-                return o, lse     
-
-            if envs.VLLM_USE_OPT_CAT and q_nope.shape[0] < 1024:
-                from vllm.v1.attention.backends.mla.test_concat import (
-                    concat_helper_decode,
-                )
-
-                q = concat_helper_decode(q_nope, q_pe, dim=2)
-            else:
-                q = torch.cat((q_nope, q_pe), dim=-1)
+        if type(q) is tuple:
+            q = torch.cat(q, dim=-1)
 
         # mypy assertion: q is now always a tensor
         assert isinstance(q, torch.Tensor)
@@ -337,7 +299,6 @@ class FlashMLAImpl(MLACommonImpl[FlashMLAMetadata]):
                 causal=True,
                 descale_q=layer._q_scale.reshape(1),
                 descale_k=layer._k_scale.reshape(1),
-                kv_cache_dtype=self.kv_cache_dtype,
             )
         else:
             o, lse = flash_mla_with_kvcache(
@@ -347,8 +308,6 @@ class FlashMLAImpl(MLACommonImpl[FlashMLAMetadata]):
                 cache_seqlens=attn_metadata.decode.seq_lens,
                 head_dim_v=self.kv_lora_rank,
                 tile_scheduler_metadata=scheduler_metadata,
-                # num_splits=scheduler_metadata.num_splits,
-                num_splits=None,
                 softmax_scale=self.scale,
                 causal=True,
                 is_fp8_kvcache=False,

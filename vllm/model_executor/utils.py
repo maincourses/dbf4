@@ -10,35 +10,6 @@ import torch
 from vllm.utils.torch_utils import is_torch_equal_or_newer
 
 
-def pad_weight(weight: torch.Tensor, num_pad: int, pad_dim: int = 0):  
-    if weight.dim() == 1:  
-        padding = torch.zeros(num_pad, dtype=weight.dtype, device=weight.device)  
-        padded_weight = torch.cat([weight, padding], dim=0)  
-    elif weight.dim() == 2:   
-        if pad_dim == 0:  
-            padding = torch.zeros(num_pad, weight.shape[1], dtype=weight.dtype, device=weight.device)  
-            padded_weight = torch.cat([weight, padding], dim=0)  
-        elif pad_dim == 1:  
-            padding = torch.zeros(weight.shape[0], num_pad, dtype=weight.dtype, device=weight.device)  
-            padded_weight = torch.cat([weight, padding], dim=1)  
-        else:  
-            raise ValueError("pad_dim must be 0 or 1")  
-    else:  
-        raise ValueError("Weight tensor must be 1D or 2D")   
-    padded_weight = padded_weight.contiguous()
-    return padded_weight  
-
-
-def gemm_bank_conf(weight):  
-    is_mul_of_2048 = weight % 2048 == 0     
-    is_power_of_two = (weight & (weight - 1)) == 0 and weight != 0  
-      
-    if is_mul_of_2048 and is_power_of_two:  
-        return True 
-    else:  
-        return False  
-
-
 def set_weight_attrs(
     weight: torch.Tensor,
     weight_attrs: dict[str, Any] | None,
@@ -73,7 +44,9 @@ def set_weight_attrs(
         setattr(weight, key, value)
 
 
-def replace_parameter(layer: torch.nn.Module, param_name: str, new_data: torch.Tensor):
+def replace_parameter(
+    layer: torch.nn.Module, param_name: str, new_data: torch.Tensor | None
+):
     """
     Replace a parameter of a layer while maintaining the ability to reload the weight.
     Called within implementations of the `process_weights_after_loading` method.
@@ -83,9 +56,15 @@ def replace_parameter(layer: torch.nn.Module, param_name: str, new_data: torch.T
     Args:
         layer: Layer containing parameter to replace
         param_name: Name of parameter to replace
-        new_data: New data of the new parameter
+        new_data: New data of the new parameter, or None to set the parameter to None
     """
     # should not be used on a tied/shared param
+
+    # If new_data is None, set the parameter to None
+    if new_data is None:
+        setattr(layer, param_name, None)
+        return
+
     if isinstance(new_data, torch.nn.Parameter):
         new_data = new_data.data
     new_param = torch.nn.Parameter(new_data, requires_grad=False)

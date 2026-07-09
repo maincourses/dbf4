@@ -34,12 +34,12 @@ import torch.nn.functional as F
 from torch import nn
 from transformers import Qwen2MoeConfig
 
-from vllm.attention.layer import Attention
 from vllm.compilation.decorators import support_torch_compile
 from vllm.config import CacheConfig, VllmConfig
 from vllm.distributed import get_pp_group, get_tensor_model_parallel_world_size
 from vllm.logger import init_logger
 from vllm.model_executor.layers.activation import SiluAndMul
+from vllm.model_executor.layers.attention import Attention
 from vllm.model_executor.layers.fused_moe import SharedFusedMoE
 from vllm.model_executor.layers.layernorm import RMSNorm
 from vllm.model_executor.layers.linear import (
@@ -67,10 +67,6 @@ from .utils import (
     make_layers,
     maybe_prefix,
 )
-import os
-import re
-from vllm import _custom_ops as ops
-from vllm.model_executor.utils import pad_weight, gemm_bank_conf
 
 logger = init_logger(__name__)
 
@@ -393,22 +389,13 @@ class Qwen2MoeModel(nn.Module):
         self.make_empty_intermediate_tensors = make_empty_intermediate_tensors_factory(
             ["hidden_states", "residual"], config.hidden_size
         )
-        self.quant_method = None
-        if quant_config is not None:
-            self.quant_method=quant_config.get_name()
-            self.quant_config=quant_config
-               
-        self.use_llama_nn = os.environ.get('LLAMA_NN') == '1'
-        self.use_gemm_pad = os.environ.get('GEMM_PAD') == '1'
-        self.use_fa_pad = os.environ.get('FA_PAD') == '1'
-        self.use_awq_pad = os.environ.get('AWQ_PAD') == '1'
 
     def embed_input_ids(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self.embed_tokens(input_ids)
 
     def forward(
         self,
-        input_ids: torch.Tensor,
+        input_ids: torch.Tensor | None,
         positions: torch.Tensor,
         intermediate_tensors: IntermediateTensors | None = None,
         inputs_embeds: torch.Tensor | None = None,
@@ -545,47 +532,6 @@ class Qwen2MoeModel(nn.Module):
                     )
                     weight_loader(param, loaded_weight)
             loaded_params.add(name)
-
-        if self.use_llama_nn and self.quant_method is None:
-            lay_key_words = [
-                "gate_up_proj.weight",
-                "down_proj.weight",
-                "mlp.gate.weight",
-                "self_attn.qkv_proj.weight",
-                "self_attn.o_proj.weight",
-                "lm_head.weight",
-            ]
-            combined_words = "|".join(lay_key_words)
-            
-            # lay_qkv_words = ["self_attn.qkv_proj.weight"]   
-            # qkv_words = "|".join(lay_qkv_words)  
-            
-            # lay_qkv_bias_words = ["self_attn.qkv_proj.bias"]   
-            # qkv_bias_words = "|".join(lay_qkv_bias_words) 
-            
-            for layername in loaded_params:
-                weight = params_dict[layername]
-                os.environ['LM_NN'] = '0' 
-                # if self.use_fa_pad and (re.findall(qkv_bias_words, layername)):
-                #     weight.data = pad_weight(weight.data, 32)
-                    
-                matches = re.findall(combined_words, layername)
-                if matches:   
-                    # if self.use_gemm_pad and gemm_bank_conf(weight.data.shape[0]):
-                    #     weight.data = pad_weight(weight.data, 32)  
-                    
-                    # if self.use_fa_pad and (re.findall(qkv_words, layername)):
-                    #     if not gemm_bank_conf(weight.data.shape[0]):
-                    #         weight.data = pad_weight(weight.data, 32)
-                        
-                    _weight = torch.zeros_like(weight.data)
-                    ori_shape =_weight.shape
-                    
-                    ops.trans_w16_gemm(_weight, weight.data, _weight.shape[0], _weight.shape[1])
-                    weight.data.copy_(_weight)
-                    
-                    weight.data=weight.data.reshape(ori_shape[1],-1)
-            
         return loaded_params
 
 
@@ -633,7 +579,7 @@ class Qwen2MoeForCausalLM(nn.Module, SupportsPP, SupportsLoRA):
 
     def forward(
         self,
-        input_ids: torch.Tensor,
+        input_ids: torch.Tensor | None,
         positions: torch.Tensor,
         intermediate_tensors: IntermediateTensors | None = None,
         inputs_embeds: torch.Tensor | None = None,

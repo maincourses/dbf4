@@ -11,6 +11,8 @@ from unittest.mock import Mock
 
 import pytest
 import torch
+from packaging.version import Version
+from transformers import __version__ as TRANSFORMERS_VERSION
 
 from vllm import LLM
 from vllm.platforms import current_platform
@@ -19,14 +21,12 @@ from vllm.v1.engine.llm_engine import LLMEngine
 from ..conftest import HfRunner, VllmRunner
 from ..models.utils import check_outputs_equal
 from ..utils import multi_gpu_test
-from vllm.platforms import current_platform
-from ..utils import models_path_prefix
 
 ATTN_BACKEND = ["ROCM_ATTN"] if current_platform.is_rocm() else ["FLASH_ATTN"]
 
 MODELS = [
-    os.path.join(models_path_prefix, "hmellor/tiny-random-Gemma2ForCausalLM"),
-    os.path.join(models_path_prefix, "meta-llama/Llama-3.2-1B-Instruct"),
+    "hmellor/tiny-random-Gemma2ForCausalLM",
+    "meta-llama/Llama-3.2-1B-Instruct",
 ]
 
 TARGET_TEST_SUITE = os.environ.get("TARGET_TEST_SUITE", "L4")
@@ -34,10 +34,7 @@ TARGET_TEST_SUITE = os.environ.get("TARGET_TEST_SUITE", "L4")
 
 def test_vllm_gc_ed():
     """Verify vllm instance is GC'ed when it is deleted"""
-    if not current_platform.is_rocm():
-        llm = LLM(os.path.join(models_path_prefix, "hmellor/tiny-random-LlamaForCausalLM"))
-    else:
-        llm = LLM(os.path.join(models_path_prefix, "hmellor/tiny-random-LlamaForCausalLM"), block_size=64)
+    llm = LLM("hmellor/tiny-random-LlamaForCausalLM")
     weak_llm = weakref.ref(llm)
     del llm
     # If there's any circular reference to vllm, this fails
@@ -96,44 +93,33 @@ def test_models(
         if enable_prompt_embeds:
             with torch.no_grad():
                 prompt_embeds = hf_model.get_prompt_embeddings(example_prompts)
+            if model == "hmellor/tiny-random-Gemma2ForCausalLM" and (
+                Version(TRANSFORMERS_VERSION) < Version("5.3.0.dev0")
+            ):
+                # For Gemma 1/2 models with Transformers 5.4.0+, the prompt embeddings
+                # are normalised in `get_prompt_embeddings`, like Gemma 3.
+                # For older versions, we need to manually normalise.
+                embed_scale = hf_model.config.hidden_size**0.5
+                normalizer = torch.tensor(embed_scale, dtype=prompt_embeds[0].dtype)
+                prompt_embeds = [p_e * normalizer for p_e in prompt_embeds]
 
-    if not current_platform.is_rocm():
-        with VllmRunner(
-            model,
-            max_model_len=8192,
-            enforce_eager=enforce_eager,
-            enable_prompt_embeds=enable_prompt_embeds,
-            gpu_memory_utilization=0.7,
-            async_scheduling=async_scheduling,
-            distributed_executor_backend=model_executor,
-            attention_config={"backend": backend},
-        ) as vllm_model:
-            if enable_prompt_embeds:
-                vllm_outputs = vllm_model.generate_greedy(prompt_embeds, max_tokens)
-                vllm_outputs = _fix_prompt_embed_outputs(
-                    vllm_outputs, hf_model, example_prompts
-                )
-            else:
-                vllm_outputs = vllm_model.generate_greedy(example_prompts, max_tokens)
-    else:
-        with VllmRunner(
-            model,
-            max_model_len=8192,
-            enforce_eager=enforce_eager,
-            enable_prompt_embeds=enable_prompt_embeds,
-            gpu_memory_utilization=0.7,
-            async_scheduling=async_scheduling,
-            distributed_executor_backend=model_executor,
-            attention_config={"backend": backend},
-            block_size=64,
-        ) as vllm_model:
-            if enable_prompt_embeds:
-                vllm_outputs = vllm_model.generate_greedy(prompt_embeds, max_tokens)
-                vllm_outputs = _fix_prompt_embed_outputs(
-                    vllm_outputs, hf_model, example_prompts
-                )
-            else:
-                vllm_outputs = vllm_model.generate_greedy(example_prompts, max_tokens)
+    with VllmRunner(
+        model,
+        max_model_len=8192,
+        enforce_eager=enforce_eager,
+        enable_prompt_embeds=enable_prompt_embeds,
+        gpu_memory_utilization=0.7,
+        async_scheduling=async_scheduling,
+        distributed_executor_backend=model_executor,
+        attention_config={"backend": backend},
+    ) as vllm_model:
+        if enable_prompt_embeds:
+            vllm_outputs = vllm_model.generate_greedy(prompt_embeds, max_tokens)
+            vllm_outputs = _fix_prompt_embed_outputs(
+                vllm_outputs, hf_model, example_prompts
+            )
+        else:
+            vllm_outputs = vllm_model.generate_greedy(example_prompts, max_tokens)
 
     check_outputs_equal(
         outputs_0_lst=hf_outputs,
@@ -143,94 +129,92 @@ def test_models(
     )
 
 
-# @multi_gpu_test(num_gpus=2)
-# @pytest.mark.parametrize(
-#     "model, distributed_executor_backend, attention_backend, test_suite, extra_env",
-#     [
-#         ("facebook/opt-125m", "ray", "", "L4", {}),
-#         ("facebook/opt-125m", "mp", "", "L4", {}),
-#         ("facebook/opt-125m", "ray", "", "L4", {"VLLM_SLEEP_WHEN_IDLE": "1"}),
-#         ("facebook/opt-125m", "mp", "", "L4", {"VLLM_SLEEP_WHEN_IDLE": "1"}),
-#         ("meta-llama/Llama-3.2-1B-Instruct", "ray", "", "L4", {}),
-#         ("meta-llama/Llama-3.2-1B-Instruct", "mp", "", "L4", {}),
-#         ("facebook/opt-125m", "ray", "", "A100", {}),
-#         ("facebook/opt-125m", "mp", "", "A100", {}),
-#     ],
-# )
-# @pytest.mark.parametrize("enable_prompt_embeds", [True, False])
-# def test_models_distributed(
-#     monkeypatch: pytest.MonkeyPatch,
-#     hf_runner,
-#     vllm_runner,
-#     example_prompts,
-#     model: str,
-#     distributed_executor_backend: str,
-#     attention_backend: str,
-#     test_suite: str,
-#     extra_env: dict[str, str],
-#     enable_prompt_embeds: bool,
-# ) -> None:
-#     if test_suite != TARGET_TEST_SUITE:
-#         pytest.skip(f"Skip test for {test_suite}")
+@multi_gpu_test(num_gpus=2)
+@pytest.mark.parametrize(
+    "model, distributed_executor_backend, attention_backend, test_suite, extra_env",
+    [
+        ("facebook/opt-125m", "ray", "", "L4", {}),
+        ("facebook/opt-125m", "mp", "", "L4", {}),
+        ("meta-llama/Llama-3.2-1B-Instruct", "ray", "", "L4", {}),
+        ("meta-llama/Llama-3.2-1B-Instruct", "mp", "", "L4", {}),
+        ("facebook/opt-125m", "ray", "", "A100", {}),
+        ("facebook/opt-125m", "mp", "", "A100", {}),
+    ],
+)
+@pytest.mark.parametrize("enable_prompt_embeds", [True, False])
+def test_models_distributed(
+    monkeypatch: pytest.MonkeyPatch,
+    hf_runner,
+    vllm_runner,
+    example_prompts,
+    model: str,
+    distributed_executor_backend: str,
+    attention_backend: str,
+    test_suite: str,
+    extra_env: dict[str, str],
+    enable_prompt_embeds: bool,
+) -> None:
+    if test_suite != TARGET_TEST_SUITE:
+        pytest.skip(f"Skip test for {test_suite}")
 
-#     with monkeypatch.context() as monkeypatch_context:
-#         if (
-#             model == "meta-llama/Llama-3.2-1B-Instruct"
-#             and distributed_executor_backend == "ray"
-#             and attention_backend == ""
-#             and test_suite == "L4"
-#             and enable_prompt_embeds
-#         ):  # noqa
-#             pytest.skip("enable_prompt_embeds does not work with ray compiled dag.")
+    with monkeypatch.context() as monkeypatch_context:
+        if (
+            model == "meta-llama/Llama-3.2-1B-Instruct"
+            and distributed_executor_backend == "ray"
+            and attention_backend == ""
+            and test_suite == "L4"
+            and enable_prompt_embeds
+        ):  # noqa
+            pytest.skip("enable_prompt_embeds does not work with ray compiled dag.")
 
-#         for k, v in extra_env.items():
-#             monkeypatch_context.setenv(k, v)
+        for k, v in extra_env.items():
+            monkeypatch_context.setenv(k, v)
 
-#         dtype = "half"
-#         max_tokens = 5
+        dtype = "half"
+        max_tokens = 5
 
-#         # NOTE: take care of the order. run vLLM first, and then run HF.
-#         # vLLM needs a fresh new process without cuda initialization.
-#         # if we run HF first, the cuda initialization will be done and it
-#         # will hurt multiprocessing backend with fork method
-#         # (the default method).
-#         attention_config = {"backend": attention_backend} if attention_backend else None
-#         with vllm_runner(
-#             model,
-#             dtype=dtype,
-#             tensor_parallel_size=2,
-#             distributed_executor_backend=distributed_executor_backend,
-#             enable_prompt_embeds=enable_prompt_embeds,
-#             gpu_memory_utilization=0.7,
-#             attention_config=attention_config,
-#         ) as vllm_model:
-#             if enable_prompt_embeds:
-#                 with hf_runner(model, dtype=dtype) as hf_model:
-#                     with torch.no_grad():
-#                         prompt_embeds = hf_model.get_prompt_embeddings(example_prompts)
-#                     vllm_outputs = vllm_model.generate_greedy(prompt_embeds, max_tokens)
-#                     vllm_outputs = _fix_prompt_embed_outputs(
-#                         vllm_outputs, hf_model, example_prompts
-#                     )
-#                     hf_outputs = hf_model.generate_greedy(example_prompts, max_tokens)
-#             else:
-#                 vllm_outputs = vllm_model.generate_greedy(example_prompts, max_tokens)
-#                 with hf_runner(model, dtype=dtype) as hf_model:
-#                     hf_outputs = hf_model.generate_greedy(example_prompts, max_tokens)
+        # NOTE: take care of the order. run vLLM first, and then run HF.
+        # vLLM needs a fresh new process without cuda initialization.
+        # if we run HF first, the cuda initialization will be done and it
+        # will hurt multiprocessing backend with fork method
+        # (the default method).
+        attention_config = {"backend": attention_backend} if attention_backend else None
+        with vllm_runner(
+            model,
+            dtype=dtype,
+            tensor_parallel_size=2,
+            distributed_executor_backend=distributed_executor_backend,
+            enable_prompt_embeds=enable_prompt_embeds,
+            gpu_memory_utilization=0.7,
+            attention_config=attention_config,
+        ) as vllm_model:
+            if enable_prompt_embeds:
+                with hf_runner(model, dtype=dtype) as hf_model:
+                    with torch.no_grad():
+                        prompt_embeds = hf_model.get_prompt_embeddings(example_prompts)
+                    vllm_outputs = vllm_model.generate_greedy(prompt_embeds, max_tokens)
+                    vllm_outputs = _fix_prompt_embed_outputs(
+                        vllm_outputs, hf_model, example_prompts
+                    )
+                    hf_outputs = hf_model.generate_greedy(example_prompts, max_tokens)
+            else:
+                vllm_outputs = vllm_model.generate_greedy(example_prompts, max_tokens)
+                with hf_runner(model, dtype=dtype) as hf_model:
+                    hf_outputs = hf_model.generate_greedy(example_prompts, max_tokens)
 
-#     check_outputs_equal(
-#         outputs_0_lst=hf_outputs,
-#         outputs_1_lst=vllm_outputs,
-#         name_0="hf",
-#         name_1="vllm",
-#     )
+    check_outputs_equal(
+        outputs_0_lst=hf_outputs,
+        outputs_1_lst=vllm_outputs,
+        name_0="hf",
+        name_1="vllm",
+    )
 
 
 def test_failed_model_execution(vllm_runner, monkeypatch) -> None:
     # Needed to mock an error in the same process
     monkeypatch.setenv("VLLM_ENABLE_V1_MULTIPROCESSING", "0")
 
-    with vllm_runner(os.path.join(models_path_prefix, "facebook/opt-125m"), enforce_eager=True) as vllm_model:
+    with vllm_runner("facebook/opt-125m", enforce_eager=True) as vllm_model:
         if isinstance(vllm_model.llm.llm_engine, LLMEngine):
             v1_test_failed_model_execution(vllm_model)
 

@@ -1,20 +1,16 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
-
-import os
 import pytest
 import torch
 import torch.nn.functional as F
-from ....utils import models_path_prefix
-
 
 CROSS_ENCODER_MODELS = [
-    os.path.join(models_path_prefix, "cross-encoder/ms-marco-MiniLM-L-6-v2"),  # Bert
-    os.path.join(models_path_prefix, "BAAI/bge-reranker-v2-m3"),  # Roberta
+    "cross-encoder/ms-marco-MiniLM-L-6-v2",  # Bert
+    "BAAI/bge-reranker-v2-m3",  # Roberta
 ]
 
 EMBEDDING_MODELS = [
-    # os.path.join(models_path_prefix, "sentence-transformers/all-MiniLM-L12-v2"),
+    "sentence-transformers/all-MiniLM-L12-v2",
 ]
 
 TEXTS_1 = [

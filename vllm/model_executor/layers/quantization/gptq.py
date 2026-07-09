@@ -98,7 +98,7 @@ class GPTQConfig(QuantizationConfig):
         if self.weight_bits == 4:
             logger.warning_once(
                 "Currently, the 4-bit gptq_gemm kernel for GPTQ is buggy. "
-                "Please switch to gptq_marlin or gptq_bitblas."
+                "Please switch to gptq_marlin."
             )
 
         self.modules_in_block_to_quantize = modules_in_block_to_quantize or []
@@ -385,7 +385,7 @@ class GPTQLinearMethod(LinearMethodBase):
             layer.scales,
             layer.g_idx,
             layer.exllama_state == ExllamaState.READY,
-            # self.use_v2_format,
+            self.use_v2_format,
             self.quant_config.weight_bits,
         )
         if bias is not None:

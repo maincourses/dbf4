@@ -35,11 +35,11 @@ __global__ void batched_moe_align_block_size_kernel(
   int32_t const block_ids_size = sorted_ids_size / block_size;
   int32_t const SENTINEL =
       num_batches * max_tokens_per_batch;  // To denote invalid entries.
-  // Intialize sorted_ids
+  // Initialize sorted_ids
   for (size_t i = threadIdx.x; i < sorted_ids_size; i += stride) {
     sorted_ids[i] = SENTINEL;
   }
-  // Intialize expert_ids with -1
+  // Initialize expert_ids with -1
   for (size_t i = threadIdx.x; i < block_ids_size; i += stride) {
     block_ids[i] = -1;
   }
@@ -172,7 +172,7 @@ __device__ void _moe_align_block_size(
     }
   }
 
-  // Fill remaining expert_ids with 0
+  // Fill remaining expert_ids with -1
   const size_t fill_start_idx =
       cumsum[cumsum_offset + num_experts] / block_size + threadIdx.x;
   for (size_t i = fill_start_idx; i < max_num_m_blocks; i += blockDim.x) {
@@ -265,7 +265,7 @@ __device__ void _moe_align_block_size_small_batch_expert(
     }
   }
 
-  // Fill remaining expert_ids with 0
+  // Fill remaining expert_ids with -1
   const size_t fill_start_idx = cumsum[num_experts] / block_size + tid;
   for (size_t i = fill_start_idx; i < max_num_m_blocks; i += stride) {
     expert_ids[expert_ids_offset + i] = inactive_expert_id;
@@ -332,7 +332,7 @@ __global__ void moe_align_block_size_kernel(
       topk_ids, sorted_token_ids, expert_ids, total_tokens_post_pad, expert_map,
       num_experts, padded_num_experts, experts_per_warp, block_size, numel,
       cumsum, max_num_tokens_padded, CEILDIV(max_num_tokens_padded, block_size),
-      0, 0, topk_num, nullptr, has_expert_map);
+      0, -1, topk_num, nullptr, has_expert_map);
 }
 
 template <typename scalar_t>
@@ -362,36 +362,6 @@ __global__ void moe_sum_kernel(
   }
 }
 
-template <typename scalar_t, int TOPK, int SPLIT_D, int BLOCK_DIM>
-__global__ void moe_sum_sharedmem_topk8(
-    scalar_t* __restrict__ out,          
-    const scalar_t* __restrict__ input,  
-    const int d) {
-    const int token_idx = blockIdx.x / SPLIT_D;  
-    const int sub_block = blockIdx.x % SPLIT_D;  
-    const int d_per_block = (d + SPLIT_D - 1) / SPLIT_D;
-    const int64_t d_start = sub_block * d_per_block;
-    const int64_t token_offset = token_idx * TOPK * d;
-    const int64_t d_end = min(d_start + d_per_block, d);  
-    __shared__ __align__(16) scalar_t sem_input[TOPK][BLOCK_DIM];
-    for (int64_t idx = d_start + threadIdx.x; idx < d_end; idx += blockDim.x) {
-        sem_input[0][threadIdx.x] = input[token_offset + 0 * d + idx];
-        sem_input[1][threadIdx.x] = input[token_offset + 1 * d + idx];
-        sem_input[2][threadIdx.x] = input[token_offset + 2 * d + idx];
-        sem_input[3][threadIdx.x] = input[token_offset + 3 * d + idx];
-        sem_input[4][threadIdx.x] = input[token_offset + 4 * d + idx];
-        sem_input[5][threadIdx.x] = input[token_offset + 5 * d + idx];
-        sem_input[6][threadIdx.x] = input[token_offset + 6 * d + idx];
-        sem_input[7][threadIdx.x] = input[token_offset + 7 * d + idx];
-        __syncthreads();
-        scalar_t x = sem_input[0][threadIdx.x] + sem_input[1][threadIdx.x] + sem_input[2][threadIdx.x] + 
-          sem_input[3][threadIdx.x] + sem_input[4][threadIdx.x] + sem_input[5][threadIdx.x] + 
-          sem_input[6][threadIdx.x] + sem_input[7][threadIdx.x];
-        out[token_idx * d + idx] = x;
-    }
-}
-
-
 template <typename scalar_t, int32_t fill_threads>
 __global__ void moe_align_block_size_small_batch_expert_kernel(
     const scalar_t* __restrict__ topk_ids,
@@ -403,7 +373,7 @@ __global__ void moe_align_block_size_small_batch_expert_kernel(
   _moe_align_block_size_small_batch_expert<scalar_t, fill_threads>(
       topk_ids, sorted_token_ids, expert_ids, total_tokens_post_pad, expert_map,
       num_experts, block_size, numel, max_num_tokens_padded,
-      CEILDIV(max_num_tokens_padded, block_size), 0, 0, topk_num, nullptr,
+      CEILDIV(max_num_tokens_padded, block_size), -1, 0, topk_num, nullptr,
       has_expert_map);
 }
 
@@ -662,73 +632,6 @@ void moe_sum(torch::Tensor& input,   // [num_tokens, topk, hidden_size]
       });
       break;
 
-    case 8:
-      VLLM_DISPATCH_FLOATING_TYPES(input.scalar_type(), "moe_sum_kernel", [&] {
-        vllm::moe::moe_sum_kernel<scalar_t, 8><<<grid, block, 0, stream>>>(
-            output.data_ptr<scalar_t>(), input.data_ptr<scalar_t>(),
-            hidden_size);
-      });
-      break;
-      
-    default:
-      at::sum_out(output, input, 1);
-      break;
-  }
-}
-
-
-void moe_sum_opt1(torch::Tensor& input,   // [num_tokens, topk, hidden_size]
-             torch::Tensor& output)  // [num_tokens, hidden_size]
-{
-  const int hidden_size = input.size(-1);
-  const auto num_tokens = output.numel() / hidden_size;
-  const int topk = input.size(1);
-
-  dim3 grid(num_tokens);
-  dim3 block(std::min(hidden_size, 1024));
-  const at::cuda::OptionalCUDAGuard device_guard(device_of(output));
-  const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
-    
-  constexpr int splitD_ = 8;
-  const int TOPK8_GRID_DIM = num_tokens * splitD_;
-  constexpr int TOPK8_BLOCK_DIM = 256;
-  dim3 grid_8(TOPK8_GRID_DIM);
-  dim3 block_8(TOPK8_BLOCK_DIM);
-
-  switch (topk) {
-    case 2:
-      VLLM_DISPATCH_FLOATING_TYPES(input.scalar_type(), "moe_sum_kernel", [&] {
-        vllm::moe::moe_sum_kernel<scalar_t, 2><<<grid, block, 0, stream>>>(
-            output.data_ptr<scalar_t>(), input.data_ptr<scalar_t>(),
-            hidden_size);
-      });
-      break;
-
-    case 3:
-      VLLM_DISPATCH_FLOATING_TYPES(input.scalar_type(), "moe_sum_kernel", [&] {
-        vllm::moe::moe_sum_kernel<scalar_t, 3><<<grid, block, 0, stream>>>(
-            output.data_ptr<scalar_t>(), input.data_ptr<scalar_t>(),
-            hidden_size);
-      });
-      break;
-
-    case 4:
-      VLLM_DISPATCH_FLOATING_TYPES(input.scalar_type(), "moe_sum_kernel", [&] {
-        vllm::moe::moe_sum_kernel<scalar_t, 4><<<grid, block, 0, stream>>>(
-            output.data_ptr<scalar_t>(), input.data_ptr<scalar_t>(),
-            hidden_size);
-      });
-      break;
-
-    case 8:
-      VLLM_DISPATCH_FLOATING_TYPES(input.scalar_type(), "moe_sum_sharedmem_topk8", [&]{
-        vllm::moe::moe_sum_sharedmem_topk8<scalar_t, 8, splitD_, TOPK8_BLOCK_DIM><<<grid_8, block_8, 0, stream>>>(
-            output.data_ptr<scalar_t>(), input.data_ptr<scalar_t>(),
-            hidden_size);
-      });
-
-      break;
-      
     default:
       at::sum_out(output, input, 1);
       break;

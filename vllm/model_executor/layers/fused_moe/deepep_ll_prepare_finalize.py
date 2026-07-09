@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 from collections.abc import Callable
-from typing import Callable, Optional
 
 import deep_ep
 import torch
@@ -22,7 +21,7 @@ from vllm.v1.worker.ubatching import (
     dbo_enabled,
     dbo_maybe_run_recv_hook,
 )
-from vllm.platforms import current_platform
+
 logger = init_logger(__name__)
 
 # DeepEP kernels quantize dispatch inputs in 128 element chunks.
@@ -50,7 +49,7 @@ def dequant_fp8(
     return (expert_x_fp32 * expert_x_scales).view(expert_x_fp8.size())
 
 
-class DeepEPLLPrepareAndFinalize(mk.FusedMoEPrepareAndFinalize):
+class DeepEPLLPrepareAndFinalize(mk.FusedMoEPrepareAndFinalizeModular):
     """
     Prepare/Finalize using DeepEP low-latency kernels.
     """
@@ -92,14 +91,12 @@ class DeepEPLLPrepareAndFinalize(mk.FusedMoEPrepareAndFinalize):
         global_to_physical: torch.Tensor | None = None,
         physical_to_global: torch.Tensor | None = None,
         local_expert_global_ids: torch.Tensor | None = None,
-        use_int8_dispatch: bool = False
     ):
         super().__init__()
 
         self.buffer = buffer
         self.max_tokens_per_rank = max_tokens_per_rank
         self.use_fp8_dispatch = use_fp8_dispatch
-        self.use_int8_dispatch = use_int8_dispatch
         # The dispatch function returns a handle that the combine function
         # requires. We store the handle here so it is available to the
         # combine function.
@@ -122,7 +119,7 @@ class DeepEPLLPrepareAndFinalize(mk.FusedMoEPrepareAndFinalize):
         # time. This setting is handled by post_init_setup.
         self.use_ue8m0_dispatch = False
 
-    def post_init_setup(self, fused_experts: mk.FusedMoEPermuteExpertsUnpermute):
+    def post_init_setup(self, fused_experts: mk.FusedMoEExperts):
         if not fused_experts.supports_packed_ue8m0_act_scales():
             # Early exit.
             return
@@ -171,7 +168,6 @@ class DeepEPLLPrepareAndFinalize(mk.FusedMoEPrepareAndFinalize):
         x: torch.Tensor | tuple[torch.Tensor, torch.Tensor],
         a1_dtype: torch.dtype,
         quant_config: FusedMoEQuantConfig,
-        expert_num_tokens: Optional[torch.Tensor]= None,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         if self.use_fp8_dispatch:
             block_k = (
@@ -179,7 +175,7 @@ class DeepEPLLPrepareAndFinalize(mk.FusedMoEPrepareAndFinalize):
                 if quant_config.block_shape is not None
                 else None
             )
-            if block_k == DEEPEP_QUANT_BLOCK_SIZE or (isinstance(x, tuple) and  x[0].dtype == current_platform.fp8_dtype()):
+            if block_k == DEEPEP_QUANT_BLOCK_SIZE:
                 # DeepEP kernels did the quantization for us.
                 x, x_scales = x
                 return x, x_scales
@@ -187,9 +183,6 @@ class DeepEPLLPrepareAndFinalize(mk.FusedMoEPrepareAndFinalize):
             # Dequant to get back the tokens in the datatype we dispatched in.
             x_fp8, x_scales = x
             x = dequant_fp8(x_fp8, x_scales).to(dtype=a1_dtype)
-        elif self.use_int8_dispatch:
-            x, x_scales = x
-            return x, x_scales
 
         assert isinstance(x, (torch.Tensor, tuple))
         q_dtype = quant_config.quant_dtype
@@ -205,7 +198,6 @@ class DeepEPLLPrepareAndFinalize(mk.FusedMoEPrepareAndFinalize):
             x = x[0].permute(2, 0, 1)
             num_experts, max_tokens, hidden_dim_by_2 = x.shape
             hidden_dim = hidden_dim_by_2 * 2
-            assert envs.VLLM_FLASHINFER_MOE_BACKEND == "masked_gemm"
             logger.info_once(
                 "Quantization is fused with DeepEP nvfp4 dispatch for "
                 "FlashInfer CUTEDSL as VLLM_DEEPEPLL_NVFP4_DISPATCH==1"
@@ -221,8 +213,7 @@ class DeepEPLLPrepareAndFinalize(mk.FusedMoEPrepareAndFinalize):
             num_experts, max_tokens, hidden_dim = x.size()
 
             # TODO (varun): Optimization - Use a batched version of quant
-            if expert_num_tokens is None:
-                x = x.view((-1, hidden_dim))
+            x = x.view((-1, hidden_dim))
             x, x_scales = moe_kernel_quantize_input(
                 x,
                 quant_config.a1_scale,
@@ -250,7 +241,14 @@ class DeepEPLLPrepareAndFinalize(mk.FusedMoEPrepareAndFinalize):
         expert_map: torch.Tensor | None,
         apply_router_weight_on_input: bool,
         quant_config: FusedMoEQuantConfig,
+        defer_input_quant: bool = False,
     ) -> tuple[Callable, mk.ReceiverType]:
+        if defer_input_quant:
+            raise NotImplementedError(
+                f"{self.__class__.__name__} does not support defer_input_quant=True. "
+                "Please select an MoE kernel that accepts quantized inputs."
+            )
+
         hidden_size = a1.size(1)
         assert hidden_size in self.SUPPORTED_HIDDEN_SIZES, (
             f"Hidden Size {hidden_size} not in supported list of hidden sizes"
@@ -297,19 +295,20 @@ class DeepEPLLPrepareAndFinalize(mk.FusedMoEPrepareAndFinalize):
 
         # Dispatch
         dispatch_topk_ids = self._map_global_to_physical_ids(topk_ids)
-
-        quant_type = 0
-        if self.use_int8_dispatch:
-            quant_type = 1
-        elif self.use_fp8_dispatch:
-            quant_type = 2
         expert_x, expert_num_tokens, handle, _, hook = self.buffer.low_latency_dispatch(
             a1,
             dispatch_topk_ids,
             self.max_tokens_per_rank,
             num_experts,
-            quant_type = quant_type,
-            fp8_round_scale=False,
+            use_fp8=self.use_fp8_dispatch,
+            round_scale=self.use_ue8m0_dispatch,
+            use_ue8m0=self.use_ue8m0_dispatch,
+            **(dict(use_nvfp4=True) if use_nvfp4 else dict()),
+            **(
+                dict(x_global_scale=qc_a1_gscale_or_scale)
+                if qc_a1_gscale_or_scale is not None
+                else dict()
+            ),
             async_finish=False,
             return_recv_hook=True,
         )
@@ -334,7 +333,7 @@ class DeepEPLLPrepareAndFinalize(mk.FusedMoEPrepareAndFinalize):
         a1_dtype: torch.dtype,
         quant_config: FusedMoEQuantConfig,
     ) -> mk.PrepareResultType:
-        expert_x, expert_x_scale = self._do_quant(expert_x, a1_dtype, quant_config, expert_num_tokens)
+        expert_x, expert_x_scale = self._do_quant(expert_x, a1_dtype, quant_config)
 
         expert_tokens_meta = mk.ExpertTokensMetadata(
             expert_num_tokens=expert_num_tokens, expert_num_tokens_cpu=None
@@ -351,7 +350,13 @@ class DeepEPLLPrepareAndFinalize(mk.FusedMoEPrepareAndFinalize):
         expert_map: torch.Tensor | None,
         apply_router_weight_on_input: bool,
         quant_config: FusedMoEQuantConfig,
+        defer_input_quant: bool = False,
     ) -> mk.PrepareResultType:
+        if defer_input_quant:
+            raise NotImplementedError(
+                f"{self.__class__.__name__} does not support defer_input_quant=True. "
+                "Please select an MoE kernel that accepts quantized inputs."
+            )
         hook, receiver = self.prepare_async(
             a1,
             topk_weights,

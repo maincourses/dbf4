@@ -7,20 +7,18 @@ Run `pytest tests/quantization/test_quant_lm_head_true.py --forked`.
 
 import pytest
 import torch
-import os
 
 from vllm.model_executor.layers.quantization.gptq import GPTQLinearMethod
 from vllm.model_executor.layers.quantization.gptq_marlin import GPTQMarlinLinearMethod
 from vllm.model_executor.layers.vocab_parallel_embedding import (
     UnquantizedEmbeddingMethod,
 )
-from ..utils import models_path_prefix
 
 PROMPT = "On the surface of Mars, we found"
 
 MODELS_QUANT = [
-    (os.path.join(models_path_prefix, "ModelCloud/Qwen1.5-1.8B-Chat-GPTQ-4bits-dynamic-cfg-with-lm_head"), True),
-    (os.path.join(models_path_prefix, "TheBloke/TinyLlama-1.1B-Chat-v1.0-GPTQ"), False),
+    ("ModelCloud/Qwen1.5-1.8B-Chat-GPTQ-4bits-dynamic-cfg-with-lm_head", True),
+    ("TheBloke/TinyLlama-1.1B-Chat-v1.0-GPTQ", False),
 ]
 
 

@@ -1,15 +1,13 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 import pytest
-import os
 
 from ...utils import check_logprobs_close
-from ....utils import models_path_prefix
 
 MODELS = [
     # TODO(sang): Sliding window should be tested separately.
-    os.path.join(models_path_prefix, "ibm/PowerLM-3b"),
-    os.path.join(models_path_prefix, "ibm/PowerMoE-3b"),
+    "ibm/PowerLM-3b",
+    "ibm/PowerMoE-3b",
 ]
 
 

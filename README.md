@@ -1,106 +1,103 @@
-# <div align="center"><strong>deprecated vLLM</strong></div>
-## 简介
-vLLM是一个快速且易于使用的LLM推理和服务库,使用PageAttention高效管理kv内存,Continuous batching传入请求,支持很多Hugging Face模型,如LLaMA & LLaMA-2、Qwen、Chatglm2 & Chatglm3等。
+<!-- markdownlint-disable MD001 MD041 -->
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/vllm-project/vllm/main/docs/assets/logos/vllm-logo-text-dark.png">
+    <img alt="vLLM" src="https://raw.githubusercontent.com/vllm-project/vllm/main/docs/assets/logos/vllm-logo-text-light.png" width=55%>
+  </picture>
+</p>
 
+<h3 align="center">
+Easy, fast, and cheap LLM serving for everyone
+</h3>
 
-## 支持模型结构列表
+<p align="center">
+| <a href="https://docs.vllm.ai"><b>Documentation</b></a> | <a href="https://blog.vllm.ai/"><b>Blog</b></a> | <a href="https://arxiv.org/abs/2309.06180"><b>Paper</b></a> | <a href="https://x.com/vllm_project"><b>Twitter/X</b></a> | <a href="https://discuss.vllm.ai"><b>User Forum</b></a> | <a href="https://slack.vllm.ai"><b>Developer Slack</b></a> |
+</p>
 
-| 结构                                | 模型 | FP16/BF16 | AWQ | GPTQ | 支持版本 | 是否优化 |
-| :---------------------------------: | :------: | :------: | :------: |:------: | :------: |:------: |
-| LlamaForCausalLM                    | Llama 3.2, Llama 3.1,Llama 3,Llama 2,Llama,Yi,Codellama,DeepSeek-R1-Distill-Llama     | Yes | Yes | Yes | v0.5.0，Llama 3.2>=v0.6.2 | Yes |  
-| Llama4ForConditionalGeneration      | Llama 4                                                                               | No/Yes | -  | - | v0.8.5.post1  | No |
-| QWenLMHeadModel                     | QWen,Qwen-VL                                                                          | Yes | Yes | Yes | v0.5.0，Qwen-VL>=v0.6.2 | Yes |
-| Qwen2ForCausalLM                    | QWen2,QWen1.5,CodeQwen1.5,DeepSeek-R1-Distill-Qwen,gte_Qwen2-1.5B-instruct            | Yes | Yes | Yes | v0.5.0，gte>=v0.7.2   | Yes |
-| Qwen3ForCausalLM                    | QWen3,Qwen3-Embedding,Qwen3-Reranker                                                  | Yes | - | - | v0.8.4   | Yes |
-| Qwen3MoeForCausalLM                 | QWen3MoE                                      | Yes    | -   | -   | v0.8.4       | Yes |
-| Qwen3NextForCausalLM                | QWen3-Next                                    | Yes    | -   | -   | v0.11.0      | Yes |
-| ChatGLMModel                        | glm-4v-9b,chatglm3,chatglm2                   | Yes    | No  | Yes | v0.5.0       | Yes |
-| Glm4ForCausalLM                     | GLM-4-0414                                    | No/Yes | -   | -   | v0.8.5.post1 | Yes |
-| Glm4MoeForCausalLM                  | GLM-4.5,GLM-4.6,GLM-4.7,GLM-4.5-Air           | Yes    | -   | -   | v0.9.2       | Yes |
-| Glm4vMoeForConditionalGeneration    | GLM-4.5V                                      | Yes    | -   | -   | v0.11.0      | Yes |
-| DeepseekForCausalLM                 | Deepseek                                      | Yes    | No  | -   | v0.5.0       | Yes |
-| DeepseekV2ForCausalLM               | DeepSeek-V2                                   | Yes    | No  | -   | v0.6.2       | Yes |
-| DeepseekVLV2ForCausalLM             | DeepSeek-VL2                                  | Yes    | No  | -   | v0.7.2       | Yes |
-| DeepseekV3ForCausalLM               | DeepSeek-V3                                   | Yes    | Yes | -   | v0.7.2       | Yes |
-| DeepseekV32ForCausalLM              | DeepSeek-V3.2                                 | Yes    | Yes | -   | v0.11.0      | No  |
-| GptOssForCausalLM                   | gpt-oss                                       | Yes    | -   | -   | v0.11.0      | Yes |
-| BaiChuanForCausalLM                 | Baichuan2,Baichuan                            | Yes    | No  | No  | v0.11.0      | Yes |
-| BloomForCausalLM                    | BLOOM                                         | Yes    | No  | Yes | v0.5.0       | Yes |
-| InternLMForCausalLM                 | InternLM                                      | Yes    | No  | -   | v0.5.0       | Yes |
-| InternLM2ForCausalLM                | InternLM2                                     | Yes    | No  | -   | v0.5.0       | Yes |
-| FalconForCausalLM                   | falcon                                        | Yes    | No  | Yes | v0.5.0       | Yes |
-| TeleChat2ForCausalLM                | TeleChat2                                     | Yes    | No  | -   | v0.7.2       | Yes |
-| MiniCPMForCausalLM                  | MiniCPM                                       | Yes    | No  | -   | v0.5.0       | Yes |
-| MiniCPM3ForCausalLM                 | MiniCPM3                                      | Yes    | No  | -   | v0.6.2       | Yes |
-| MixtralForCausalLM                  | Mixtral-8x7B,Mixtral-8x7B-Instruct            | Yes    | No  | -   | v0.5.0       | Yes |
-| Qwen2MoeForCausalLM                 | Qwen2-57B-A14B,Qwen2-57B-A14B-Instruct        | Yes    | No  | -   | v0.5.0       | No  |
-| LlavaForConditionalGeneration       | LLaMA,LLaMA-2,LLaMA-3                         | Yes    | No  | -   | v0.6.2       | No  |
-| Qwen2VLForConditionalGeneration     | Qwen2-VL                                      | Yes    | No  | Yes | v0.6.2       | No  |
-| Qwen2_5_VLForConditionalGeneration  | Qwen2.5-VL                                    | Yes    | No  | Yes | v0.7.2       | No  |
-| Qwen3VLForConditionalGeneration     | Qwen3-VL                                      | Yes    | No  | Yes | v0.11.0      | No  |
-| Mistral3ForConditionalGeneration    | Mistral3                                      | Yes    | No  | -   | v0.8.5.post1 | No  |
-| Gemma3ForConditionalGeneration      | Gemma 3                                       | Yes    | -   | -   | v0.8.5.post1 | No  |
-| MiniCPMV                            | MiniCPM-V                                     | Yes    | No  | -   | v0.6.2       | No  |
-| Phi3VForCausalLM                    | Phi-3.5-vision                                | Yes    | No  | -   | v0.6.2       | No  |
-| BertModel                           | bge-large-zh-v1.5                             | Yes    | No  | -   | v0.7.2       | No  |
-| XLMRobertaModel                     | bge-m3                                        | Yes    | No  | -   | v0.7.2       | No  |
-| XLMRobertaForSequenceClassification | bge-reranker-v2-m3                            | Yes    | No  | -   | v0.7.2       | No  |
+🔥 We have built a vllm website to help you get started with vllm. Please visit [vllm.ai](https://vllm.ai) to learn more.
+For events, please visit [vllm.ai/events](https://vllm.ai/events) to join us.
 
+---
 
+## About
 
-## 使用源码编译方式安装
+vLLM is a fast and easy-to-use library for LLM inference and serving.
 
-### 编译环境准备
-提供2种环境准备方式:
+Originally developed in the [Sky Computing Lab](https://sky.cs.berkeley.edu) at UC Berkeley, vLLM has evolved into a community-driven project with contributions from both academia and industry.
 
-1. 基于光源pytorch2.9.0基础镜像环境:根据pytorch2.9.0、python、dtk及系统下载对应的镜像版本。
+vLLM is fast with:
 
-2. 基于现有python环境:安装pytorch2.9.0,pytorch whl包下载目录:[https://cancon.hpccube.com:65024/4/main/pytorch](https://cancon.hpccube.com:65024/4/main/pytorch),根据python、dtk版本,下载对应pytorch2.5.1的whl包。安装命令如下:
-```shell
-pip install torch* (下载的torch的whl包)
-pip install setuptools wheel
+- State-of-the-art serving throughput
+- Efficient management of attention key and value memory with [**PagedAttention**](https://blog.vllm.ai/2023/06/20/vllm.html)
+- Continuous batching of incoming requests
+- Fast model execution with CUDA/HIP graph
+- Quantizations: [GPTQ](https://arxiv.org/abs/2210.17323), [AWQ](https://arxiv.org/abs/2306.00978), [AutoRound](https://arxiv.org/abs/2309.05516), INT4, INT8, and FP8
+- Optimized CUDA kernels, including integration with FlashAttention and FlashInfer
+- Speculative decoding
+- Chunked prefill
+
+vLLM is flexible and easy to use with:
+
+- Seamless integration with popular Hugging Face models
+- High-throughput serving with various decoding algorithms, including *parallel sampling*, *beam search*, and more
+- Tensor, pipeline, data and expert parallelism support for distributed inference
+- Streaming outputs
+- OpenAI-compatible API server
+- Support for NVIDIA GPUs, AMD CPUs and GPUs, Intel CPUs and GPUs, PowerPC CPUs, Arm CPUs, and TPU. Additionally, support for diverse hardware plugins such as Intel Gaudi, IBM Spyre and Huawei Ascend.
+- Prefix caching support
+- Multi-LoRA support
+
+vLLM seamlessly supports most popular open-source models on HuggingFace, including:
+
+- Transformer-like LLMs (e.g., Llama)
+- Mixture-of-Expert LLMs (e.g., Mixtral, Deepseek-V2 and V3)
+- Embedding Models (e.g., E5-Mistral)
+- Multi-modal LLMs (e.g., LLaVA)
+
+Find the full list of supported models [here](https://docs.vllm.ai/en/latest/models/supported_models.html).
+
+## Getting Started
+
+Install vLLM with `pip` or [from source](https://docs.vllm.ai/en/latest/getting_started/installation/gpu/index.html#build-wheel-from-source):
+
+```bash
+pip install vllm
 ```
 
-### 源码编译安装
-```shell
-git clone http://10.16.6.30/dcutoolkit/deeplearing/vllm.git # 根据需要的分支进行切换
+Visit our [documentation](https://docs.vllm.ai/en/latest/) to learn more.
+
+- [Installation](https://docs.vllm.ai/en/latest/getting_started/installation.html)
+- [Quickstart](https://docs.vllm.ai/en/latest/getting_started/quickstart.html)
+- [List of Supported Models](https://docs.vllm.ai/en/latest/models/supported_models.html)
+
+## Contributing
+
+We welcome and value any contributions and collaborations.
+Please check out [Contributing to vLLM](https://docs.vllm.ai/en/latest/contributing/index.html) for how to get involved.
+
+## Citation
+
+If you use vLLM for your research, please cite our [paper](https://arxiv.org/abs/2309.06180):
+
+```bibtex
+@inproceedings{kwon2023efficient,
+  title={Efficient Memory Management for Large Language Model Serving with PagedAttention},
+  author={Woosuk Kwon and Zhuohan Li and Siyuan Zhuang and Ying Sheng and Lianmin Zheng and Cody Hao Yu and Joseph E. Gonzalez and Hao Zhang and Ion Stoica},
+  booktitle={Proceedings of the ACM SIGOPS 29th Symposium on Operating Systems Principles},
+  year={2023}
+}
 ```
-安装依赖:
-```shell
-pip install -r requirements/rocm.txt
-```
-- 提供2种源码编译方式(进入vllm目录):
-```
-1. 编译whl包并安装
-python setup.py bdist_wheel 
-cd dist
-pip install vllm*
 
-2. 源码编译安装
-python3 setup.py install （若调试，可使用python3 setup.py develop）
-```
-若需要添加git号，设置环境变量: export ADD_GIT_VERSION=1
+## Contact Us
 
+<!-- --8<-- [start:contact-us] -->
+- For technical questions and feature requests, please use GitHub [Issues](https://github.com/vllm-project/vllm/issues)
+- For discussing with fellow users, please use the [vLLM Forum](https://discuss.vllm.ai)
+- For coordinating contributions and development, please use [Slack](https://slack.vllm.ai)
+- For security disclosures, please use GitHub's [Security Advisories](https://github.com/vllm-project/vllm/security/advisories) feature
+- For collaborations and partnerships, please contact us at [collaboration@vllm.ai](mailto:collaboration@vllm.ai)
+<!-- --8<-- [end:contact-us] -->
 
-### 运行基础环境准备
-1、使用上面基于光源pytorch2.9.0基础镜像环境
+## Media Kit
 
-2、根据pytorch2.9.0、python、dtk及系统下载对应的依赖包:
-- triton:[https://cancon.hpccube.com:65024/4/main/triton](https://cancon.hpccube.com:65024/4/main/triton/)
-- flash_attn: [https://cancon.hpccube.com:65024/4/main/flash_attn](https://cancon.hpccube.com:65024/4/main/flash_attn)
-- flash_mla: [https://cancon.hpccube.com:65024/4/main/flash_mla](https://cancon.hpccube.com:65024/4/main/flash_mla)
-- lightop: [https://cancon.hpccube.com:65024/4/main/lightop](https://cancon.hpccube.com:65024/4/main/lightop)
-- lmslim: [https://cancon.hpccube.com:65024/4/main/lmslim](https://cancon.hpccube.com:65024/4/main/lmslim)
-
-### 注意事项
-+ 若使用 pip install 下载安装过慢,可添加源: -i https://pypi.tuna.tsinghua.edu.cn/simple/
-
-## 验证
-- python -c "import vllm; print(vllm.\_\_version__)",版本号与官方版本同步,查询该软件的版本号,例如0.15.1;
-
-## Known Issue
-- 无
-
-## 参考资料
-- [README_ORIGIN](README_ORIGIN.md)
-- [https://github.com/vllm-project/vllm](https://github.com/vllm-project/vllm)
+- If you wish to use vLLM's logo, please refer to [our media kit repo](https://github.com/vllm-project/media-kit)

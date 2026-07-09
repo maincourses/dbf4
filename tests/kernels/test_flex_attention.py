@@ -2,7 +2,6 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 """Integration tests for FlexAttention backend vs default backend"""
 
-import os
 import pytest
 import torch
 from packaging import version
@@ -18,7 +17,6 @@ from vllm.v1.attention.backends.flex_attention import (
     FlexAttentionMetadataBuilder,
     physical_to_logical_mapping,
 )
-from ..utils import models_path_prefix
 
 from ..models.utils import check_embeddings_close, check_logprobs_close
 
@@ -37,7 +35,7 @@ def test_flex_attention_vs_default_backend(vllm_runner):
     This test compares the outputs from the FlexAttention backend with
     the default backend, ensuring they are similar when using the same seed.
     """
-    model_name = os.path.join(models_path_prefix, "Qwen/Qwen2.5-1.5B-Instruct")
+    model_name = "Qwen/Qwen2.5-1.5B-Instruct"
     seed = 42
     max_tokens = 24
     num_logprobs = 5

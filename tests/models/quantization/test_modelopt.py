@@ -13,13 +13,12 @@ from transformers import AutoTokenizer
 
 from tests.quantization.utils import is_quant_method_supported
 from vllm import LLM, SamplingParams
-from ....utils import models_path_prefix
 
 os.environ["TOKENIZERS_PARALLELISM"] = "true"
 
 MAX_MODEL_LEN = 1024
 
-MODELS = [os.path.join(models_path_prefix, "nvidia/Llama-3.1-8B-Instruct-FP8")]
+MODELS = ["nvidia/Llama-3.1-8B-Instruct-FP8"]
 
 EXPECTED_STRS_MAP = {
     "nvidia/Llama-3.1-8B-Instruct-FP8": [

@@ -18,7 +18,6 @@ from tests.quantization.utils import is_quant_method_supported
 from ...conftest import VllmRunner
 from ...utils import multi_gpu_test
 from ..utils import check_logprobs_close
-from ...utils import models_path_prefix
 
 os.environ["TOKENIZERS_PARALLELISM"] = "true"
 
@@ -37,15 +36,15 @@ class GGUFTestConfig(NamedTuple):
 
 
 LLAMA_CONFIG = GGUFTestConfig(
-    original_model=os.path.join(models_path_prefix,"meta-llama/Llama-3.2-1B-Instruct"),
-    gguf_repo=os.path.join(models_path_prefix,"bartowski/Llama-3.2-1B-Instruct-GGUF"),
-    gguf_filename=os.path.join(models_path_prefix,"Llama-3.2-1B-Instruct-Q6_K.gguf"),
+    original_model="meta-llama/Llama-3.2-1B-Instruct",
+    gguf_repo="bartowski/Llama-3.2-1B-Instruct-GGUF",
+    gguf_filename="Llama-3.2-1B-Instruct-Q6_K.gguf",
 )
 
 QWEN2_CONFIG = GGUFTestConfig(
-    original_model=os.path.join(models_path_prefix, "Qwen/Qwen2.5-1.5B-Instruct"),
-    gguf_repo=os.path.join(models_path_prefix, "Qwen/Qwen2.5-1.5B-Instruct-GGUF"),
-    gguf_filename=os.path.join(models_path_prefix, "qwen2.5-1.5b-instruct-q6_k.gguf"),
+    original_model="Qwen/Qwen2.5-1.5B-Instruct",
+    gguf_repo="Qwen/Qwen2.5-1.5B-Instruct-GGUF",
+    gguf_filename="qwen2.5-1.5b-instruct-q6_k.gguf",
 )
 
 QWEN3_CONFIG = GGUFTestConfig(
@@ -55,34 +54,34 @@ QWEN3_CONFIG = GGUFTestConfig(
 )
 
 PHI3_CONFIG = GGUFTestConfig(
-    original_model=os.path.join(models_path_prefix, "microsoft/Phi-3.5-mini-instruct"),
-    gguf_repo=os.path.join(models_path_prefix, "bartowski/Phi-3.5-mini-instruct-GGUF"),
-    gguf_filename=os.path.join(models_path_prefix, "Phi-3.5-mini-instruct-IQ4_XS.gguf"),
+    original_model="microsoft/Phi-3.5-mini-instruct",
+    gguf_repo="bartowski/Phi-3.5-mini-instruct-GGUF",
+    gguf_filename="Phi-3.5-mini-instruct-IQ4_XS.gguf",
 )
 
 GPT2_CONFIG = GGUFTestConfig(
-    original_model=os.path.join(models_path_prefix, "openai-community/gpt2-large"),
-    gguf_repo=os.path.join(models_path_prefix, "QuantFactory/gpt2-large-GGUF"),
-    gguf_filename=os.path.join(models_path_prefix, "gpt2-large.Q4_K_M.gguf"),
+    original_model="openai-community/gpt2-large",
+    gguf_repo="QuantFactory/gpt2-large-GGUF",
+    gguf_filename="gpt2-large.Q4_K_M.gguf",
 )
 
 STABLELM_CONFIG = GGUFTestConfig(
-    original_model=os.path.join(models_path_prefix, "stabilityai/stablelm-3b-4e1t"),
-    gguf_repo=os.path.join(models_path_prefix, "afrideva/stablelm-3b-4e1t-GGUF"),
-    gguf_filename=os.path.join(models_path_prefix, "stablelm-3b-4e1t.q4_k_m.gguf"),
+    original_model="stabilityai/stablelm-3b-4e1t",
+    gguf_repo="afrideva/stablelm-3b-4e1t-GGUF",
+    gguf_filename="stablelm-3b-4e1t.q4_k_m.gguf",
 )
 
 STARCODER_CONFIG = GGUFTestConfig(
-    original_model=os.path.join(models_path_prefix, "bigcode/starcoder2-3b"),
-    gguf_repo=os.path.join(models_path_prefix, "QuantFactory/starcoder2-3b-GGUF"),
-    gguf_filename=os.path.join(models_path_prefix, "starcoder2-3b.Q6_K.gguf"),
+    original_model="bigcode/starcoder2-3b",
+    gguf_repo="QuantFactory/starcoder2-3b-GGUF",
+    gguf_filename="starcoder2-3b.Q6_K.gguf",
 )
 
 DOLPHIN_CONFIG = GGUFTestConfig(
     # Test VocabParallelEmbedding sharding issue.
-    original_model=os.path.join(models_path_prefix, "cognitivecomputations/TinyDolphin-2.8-1.1b"),
-    gguf_repo=os.path.join(models_path_prefix, "tsunemoto/TinyDolphin-2.8-1.1b-GGUF"),
-    gguf_filename=os.path.join(models_path_prefix, "tinydolphin-2.8-1.1b.Q6_K.gguf"),
+    original_model="cognitivecomputations/TinyDolphin-2.8-1.1b",
+    gguf_repo="tsunemoto/TinyDolphin-2.8-1.1b-GGUF",
+    gguf_filename="tinydolphin-2.8-1.1b.Q6_K.gguf",
 )
 
 GEMMA3_CONFIG = GGUFTestConfig(

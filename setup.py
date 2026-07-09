@@ -13,17 +13,14 @@ import sys
 import sysconfig
 from pathlib import Path
 from shutil import which
-import tarfile
-import shutil
 
 import torch
 from packaging.version import Version, parse
 from setuptools import Extension, setup
 from setuptools.command.build_ext import build_ext
-from setuptools.command.build_py import build_py
-from setuptools.command.develop import develop
-# from setuptools_scm import get_version
+from setuptools_scm import get_version
 from torch.utils.cpp_extension import CUDA_HOME, ROCM_HOME
+
 
 from typing import Optional, Union
 import subprocess
@@ -33,41 +30,7 @@ pwd = os.path.dirname(os.path.abspath(__file__))
 add_git_version = False
 if int(os.environ.get('ADD_GIT_VERSION', '0')) == 1:
     add_git_version = True
-    
-skip_vllm_build = False
-if int(os.environ.get('SKIP_VLLM_BUILD', '0')) == 1:
-    skip_vllm_build = True
 
-def prepare_so_files():
-    source_dir = "csrc/so.tar.gz"
-    target_dir = "vllm"
-    
-    if not os.path.exists(source_dir):
-        print(f"Warning: {source_dir} not found, skipping extraction")
-        return
-    
-    print(f"Preparing C extension files from {source_dir}...")
-    
-    temp_dir = "temp_so_extract"
-    os.makedirs(temp_dir, exist_ok=True)
-    
-    try:
-        with tarfile.open(source_dir, "r:*") as tar:
-            tar.extractall(temp_dir)
-        
-        for root, dirs, files in os.walk(temp_dir):
-            for file in files:
-                if file in ["_C.abi3.so", "_moe_C.abi3.so", "cumem_allocator.abi3.so"]:
-                    src_path = os.path.join(root, file)
-                    dst_path = os.path.join(target_dir, file)
-                    
-                    os.makedirs(os.path.dirname(dst_path), exist_ok=True)
-                    
-                    shutil.copy2(src_path, dst_path)
-                    print(f"Copied {file} to {dst_path}")
-    finally:
-        if os.path.exists(temp_dir):
-            shutil.rmtree(temp_dir)  
 
 def load_module_from_path(module_name, path):
     spec = importlib.util.spec_from_file_location(module_name, path)
@@ -124,81 +87,6 @@ def is_ninja_available() -> bool:
 
 def is_freethreaded():
     return bool(sysconfig.get_config_var("Py_GIL_DISABLED"))
-
-
-def compile_grpc_protos():
-    """Compile gRPC protobuf definitions during build.
-
-    This generates *_pb2.py, *_pb2_grpc.py, and *_pb2.pyi files from
-    the vllm_engine.proto definition.
-    """
-    try:
-        from grpc_tools import protoc
-    except ImportError:
-        logger.warning(
-            "grpcio-tools not installed, skipping gRPC proto compilation. "
-            "gRPC server functionality will not be available."
-        )
-        return False
-
-    proto_file = ROOT_DIR / "vllm" / "grpc" / "vllm_engine.proto"
-    if not proto_file.exists():
-        logger.warning("Proto file not found at %s, skipping compilation", proto_file)
-        return False
-
-    logger.info("Compiling gRPC protobuf: %s", proto_file)
-
-    result = protoc.main(
-        [
-            "grpc_tools.protoc",
-            f"--proto_path={ROOT_DIR}",
-            f"--python_out={ROOT_DIR}",
-            f"--grpc_python_out={ROOT_DIR}",
-            f"--pyi_out={ROOT_DIR}",
-            str(proto_file),
-        ]
-    )
-
-    if result != 0:
-        logger.error("protoc failed with exit code %s", result)
-        return False
-
-    # Add SPDX headers and mypy ignore to generated files
-    spdx_header = (
-        "# SPDX-License-Identifier: Apache-2.0\n"
-        "# SPDX-FileCopyrightText: Copyright contributors to the vLLM project\n"
-        "# mypy: ignore-errors\n"
-    )
-
-    grpc_dir = ROOT_DIR / "vllm" / "grpc"
-    for generated_file in [
-        grpc_dir / "vllm_engine_pb2.py",
-        grpc_dir / "vllm_engine_pb2_grpc.py",
-        grpc_dir / "vllm_engine_pb2.pyi",
-    ]:
-        if generated_file.exists():
-            content = generated_file.read_text()
-            if not content.startswith("# SPDX-License-Identifier"):
-                generated_file.write_text(spdx_header + content)
-
-    logger.info("gRPC protobuf compilation successful")
-    return True
-
-
-class BuildPyAndGenerateGrpc(build_py):
-    """Build Python modules and generate gRPC stubs from proto files."""
-
-    def run(self):
-        compile_grpc_protos()
-        super().run()
-
-
-class DevelopAndGenerateGrpc(develop):
-    """Develop mode that also generates gRPC stubs from proto files."""
-
-    def run(self):
-        compile_grpc_protos()
-        super().run()
 
 
 class CMakeExtension(Extension):
@@ -779,13 +667,18 @@ class precompiled_wheel_utils:
     def get_base_commit_in_main_branch() -> str:
         try:
             # Get the latest commit hash of the upstream main branch.
-            resp_json = subprocess.check_output(
-                [
-                    "curl",
-                    "-s",
-                    "https://api.github.com/repos/vllm-project/vllm/commits/main",
+            curl_cmd = [
+                "curl",
+                "-s",
+                "https://api.github.com/repos/vllm-project/vllm/commits/main",
+            ]
+            github_token = os.getenv("GH_TOKEN", os.getenv("GITHUB_TOKEN"))
+            if github_token:
+                curl_cmd += [
+                    "-H",
+                    f"Authorization: token {github_token}",
                 ]
-            ).decode("utf-8")
+            resp_json = subprocess.check_output(curl_cmd).decode("utf-8")
             upstream_main_commit = json.loads(resp_json)["sha"]
             print(f"Upstream main branch latest commit: {upstream_main_commit}")
 
@@ -863,8 +756,7 @@ def _is_xpu() -> bool:
 
 
 def _build_custom_ops() -> bool:
-    if not skip_vllm_build:
-        return _is_cuda() or _is_hip() or _is_cpu()
+    return _is_cuda() or _is_hip()
 
 
 def get_rocm_version():
@@ -933,9 +825,9 @@ def get_version_add(sha: Optional[str] = None) -> str:
         if sha != 'Unknown':
             if sha is None:
                 sha = get_sha(vllm_root)
-            version = 'das.opt1.alpha.' + sha[:7]
+            version = 'das.' + sha[:7]
     else:
-        version = 'das.opt1.alpha'
+        version = 'das'
 
 
     # dtk version
@@ -949,9 +841,9 @@ def get_version_add(sha: Optional[str] = None) -> str:
     
     new_version_content = f"""
 try:
-    __version__ = "0.15.1"
-    __version_tuple__ = (0, 15, 1)
-    __hcu_version__ = f'0.15.1+{version}' 
+    __version__ = "0.18.1"
+    __version_tuple__ = (0, 18, 1)
+    __hcu_version__ = f'0.18.1+{version}' 
     
     from vllm.version import __version__, __version_tuple__, __hcu_version__
 except Exception as e:
@@ -1012,8 +904,9 @@ def get_vllm_version() -> str:
         os.environ["SETUPTOOLS_SCM_PRETEND_VERSION"] = env_version
         return get_version(write_to="vllm/_version.py")
 
-    # version = get_version(write_to="vllm/_version.py")
-    # sep = "+" if "+" not in version else "."  # dev versions might contain +
+    if not _is_hip():
+        version = get_version(write_to="vllm/_version.py")
+        sep = "+" if "+" not in version else "."  # dev versions might contain +
 
     if _no_device():
         if envs.VLLM_TARGET_DEVICE == "empty":
@@ -1101,8 +994,8 @@ if _is_cuda() or _is_hip():
     # copying the relevant .py files from the source repository.
     # ext_modules.append(CMakeExtension(name="vllm.triton_kernels", optional=True))
 
-# if _is_hip():
-#     ext_modules.append(CMakeExtension(name="vllm._rocm_C"))
+if _is_hip():
+    ext_modules.append(CMakeExtension(name="vllm._rocm_C"))
 
 if _is_cuda():
     ext_modules.append(CMakeExtension(name="vllm.vllm_flash_attn._vllm_fa2_C"))
@@ -1111,6 +1004,11 @@ if _is_cuda():
     ):
         # FA3 requires CUDA 12.3 or later
         ext_modules.append(CMakeExtension(name="vllm.vllm_flash_attn._vllm_fa3_C"))
+    # FA4 CuteDSL - Python-only component for FA4's cute DSL support
+    # Optional since this doesn't produce a .so file, just copies Python files
+    ext_modules.append(
+        CMakeExtension(name="vllm.vllm_flash_attn._vllm_fa4_cutedsl_C", optional=True)
+    )
     if envs.VLLM_USE_PRECOMPILED or (
         CUDA_HOME and get_nvcc_cuda_version() >= Version("12.9")
     ):
@@ -1122,36 +1020,28 @@ if _is_cuda():
             CMakeExtension(name="vllm._flashmla_extension_C", optional=True)
         )
 
+if _is_cpu():
+    import platform
+
+    if platform.machine() in ("x86_64", "AMD64"):
+        ext_modules.append(CMakeExtension(name="vllm._C"))
+        ext_modules.append(CMakeExtension(name="vllm._C_AVX512"))
+        ext_modules.append(CMakeExtension(name="vllm._C_AVX2"))
+    else:
+        ext_modules.append(CMakeExtension(name="vllm._C"))
+
 if _build_custom_ops():
     ext_modules.append(CMakeExtension(name="vllm._C"))
 
-if skip_vllm_build:
-    prepare_so_files()
-    package_data = {
-        "vllm": [
-            "py.typed",
-            "model_executor/layers/fused_moe/configs/*.json",
-            "model_executor/layers/quantization/utils/configs/*.json",
-            "entrypoints/serve/instrumentator/static/*.js",
-            "entrypoints/serve/instrumentator/static/*.css",
-            "model_executor/layers/quantization/configs/awq/*.json",
-            "attention/backends/configs/*.json",
-            "_C.abi3.so",
-            "_moe_C.abi3.so",
-        ]
-    }
-else:
-    package_data = {
-        "vllm": [
-            "py.typed",
-            "model_executor/layers/fused_moe/configs/*.json",
-            "model_executor/layers/quantization/utils/configs/*.json",
-            "entrypoints/serve/instrumentator/static/*.js",
-            "entrypoints/serve/instrumentator/static/*.css",
-            "attention/backends/configs/*.json",
-            "model_executor/layers/quantization/configs/awq/*.json",
-        ]
-    }
+package_data = {
+    "vllm": [
+        "py.typed",
+        "model_executor/layers/fused_moe/configs/*.json",
+        "model_executor/layers/quantization/utils/configs/*.json",
+        "entrypoints/serve/instrumentator/static/*.js",
+        "entrypoints/serve/instrumentator/static/*.css",
+    ]
+}
 
 
 # If using precompiled, extract and patch package_data (in advance of setup)
@@ -1163,21 +1053,16 @@ if envs.VLLM_USE_PRECOMPILED:
     for pkg, files in patch.items():
         package_data.setdefault(pkg, []).extend(files)
 
-if _no_device() or skip_vllm_build:
+if _no_device():
     ext_modules = []
 
 if not ext_modules:
-    cmdclass = {
-        "build_py": BuildPyAndGenerateGrpc,
-        "develop": DevelopAndGenerateGrpc,
-    }
+    cmdclass = {}
 else:
     cmdclass = {
         "build_ext": precompiled_build_ext
         if envs.VLLM_USE_PRECOMPILED
         else cmake_build_ext,
-        "build_py": BuildPyAndGenerateGrpc,
-        "develop": DevelopAndGenerateGrpc,
     }
 
 setup(
@@ -1186,22 +1071,35 @@ setup(
     ext_modules=ext_modules,
     install_requires=get_requirements(),
     extras_require={
-        "bench": ["pandas", "matplotlib", "seaborn", "datasets", "scipy"],
+        # AMD Zen CPU optimizations via zentorch
+        "zen": ["zentorch"],
+        "bench": ["pandas", "matplotlib", "seaborn", "datasets", "scipy", "plotly"],
         "tensorizer": ["tensorizer==2.10.1"],
-        "fastsafetensors": ["fastsafetensors >= 0.1.10"],
-        "runai": ["runai-model-streamer[s3,gcs] >= 0.15.3"],
+        "fastsafetensors": ["fastsafetensors >= 0.2.2"],
+        "instanttensor": ["instanttensor >= 0.1.5"],
+        "runai": ["runai-model-streamer[s3,gcs,azure] >= 0.15.7"],
         "audio": [
             "librosa",
             "scipy",
             "soundfile",
             "mistral_common[audio]",
+            "av",
         ],  # Required for audio processing
         "video": [],  # Kept for backwards compatibility
         "flashinfer": [],  # Kept for backwards compatibility
         # Optional deps for AMD FP4 quantization support
         "petit-kernel": ["petit-kernel"],
         # Optional deps for Helion kernel development
-        "helion": ["helion"],
+        "helion": ["helion==0.3.2"],
+        # Optional deps for gRPC server (vllm serve --grpc)
+        "grpc": ["smg-grpc-servicer[vllm] >= 0.5.0"],
+        # Optional deps for OpenTelemetry tracing
+        "otel": [
+            "opentelemetry-sdk>=1.26.0",
+            "opentelemetry-api>=1.26.0",
+            "opentelemetry-exporter-otlp>=1.26.0",
+            "opentelemetry-semantic-conventions-ai>=0.4.1",
+        ],
     },
     cmdclass=cmdclass,
     package_data=package_data,

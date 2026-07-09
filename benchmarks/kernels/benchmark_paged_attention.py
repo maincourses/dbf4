@@ -103,7 +103,7 @@ def main(
         max_logits = torch.empty_like(exp_sums)
 
     def run_cuda_benchmark(num_iters: int, profile: bool = False) -> float:
-        torch.cuda.synchronize()
+        torch.accelerator.synchronize()
         if profile:
             torch.cuda.cudart().cudaProfilerStart()
         start_time = time.perf_counter()
@@ -173,7 +173,7 @@ def main(
                     )
             else:
                 raise ValueError(f"Invalid version: {version}")
-        torch.cuda.synchronize()
+        torch.accelerator.synchronize()
 
         end_time = time.perf_counter()
         if profile:
@@ -225,7 +225,7 @@ if __name__ == "__main__":
         default="auto",
         help="Data type for kv cache storage. If 'auto', will use model "
         "data type. CUDA 11.8+ supports fp8 (=fp8_e4m3) and fp8_e5m2. "
-        "ROCm (hcu) supports fp8 (=fp8_e4m3)",
+        "ROCm (AMD GPU) supports fp8 (=fp8_e4m3)",
     )
     parser.add_argument(
         "--custom-paged-attn", action="store_true", help="Use custom paged attention"

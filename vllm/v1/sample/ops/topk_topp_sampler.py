@@ -11,14 +11,10 @@ from vllm._aiter_ops import rocm_aiter_ops
 from vllm.config.model import LogprobsMode
 from vllm.logger import init_logger
 from vllm.platforms import CpuArchEnum, current_platform
+from vllm.triton_utils import HAS_TRITON
 
-HAS_LIGHTOP_OPT_KERNEL = True
-try:
-    from lightop.sampling import top_k_top_p_sampling_from_probs as top_k_top_p_sampling_from_probs_lightop
-    from lightop.sampling import top_k_sampling_from_probs as top_k_sampling_from_probs_lightop
-    from lightop.sampling import top_p_sampling_from_probs as top_p_sampling_from_probs_lightop
-except ImportError:
-    HAS_LIGHTOP_OPT_KERNEL = False
+if HAS_TRITON:
+    from vllm.v1.sample.ops.topk_topp_triton import apply_top_k_top_p_triton
 
 logger = init_logger(__name__)
 
@@ -94,10 +90,6 @@ class TopKTopPSampler(nn.Module):
                 self.forward = self.forward_native
         else:
             self.forward = self.forward_native
-            if HAS_LIGHTOP_OPT_KERNEL and envs.VLLM_USE_LIGHTOP_FUSED_TOPP_TOPK:
-                self.forward = self.forward_lightop_opt
-
-        self.apply_top_k_top_p = apply_top_k_top_p
 
     def forward_native(
         self,
@@ -105,45 +97,13 @@ class TopKTopPSampler(nn.Module):
         generators: dict[int, torch.Generator],
         k: torch.Tensor | None,
         p: torch.Tensor | None,
-        *,
-        max_top_k: int | None = None,
-        has_any_no_top_k: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         """
         PyTorch-native implementation of top-k and top-p sampling.
 
         The logits tensor may be updated in-place.
         """
-        # Fast path: when top-k is enabled, avoid full-vocab sort/softmax by
-        # sampling from only the reduced candidate set.
-        if (
-            self.logprobs_mode not in ("processed_logits", "processed_logprobs")
-            and envs.VLLM_V1_USE_REDUCED_TOPK_TOPP_SAMPLER
-            and k is not None
-            and p is not None
-            and max_top_k is not None
-            and not has_any_no_top_k
-            and max_top_k <= 4096
-        ):
-            try:
-                return (
-                    sample_top_k_top_p_reduced(
-                        logits,
-                        generators,
-                        k,
-                        p,
-                        max_top_k=max_top_k,
-                    ),
-                    None,
-                )
-            except Exception:
-                # Fall back to the reference implementation for safety.
-                logger.debug_once(
-                    "Reduced top-k/top-p sampler failed; falling back to the "
-                    "reference implementation."
-                )
-
-        logits = self.apply_top_k_top_p(logits, k, p)
+        logits = apply_top_k_top_p(logits, k, p)
         logits_to_return = None
         if self.logprobs_mode == "processed_logits":
             logits_to_return = logits
@@ -178,19 +138,6 @@ class TopKTopPSampler(nn.Module):
         # In flex_attn/triton_attn fp32 inference, logits can be non-contiguous
         # because of slicing operation in logits_processor.
         return flashinfer_sample(logits.contiguous(), k, p, generators), None
-    
-    def forward_lightop_opt(
-        self,
-        logits: torch.Tensor,
-        generators: dict[int, torch.Generator],
-        k: torch.Tensor | None,
-        p: torch.Tensor | None,
-    ) -> tuple[torch.Tensor, torch.Tensor | None]:
-        """Top-k and top-p sampling optimized by lightop."""
-        if (k is None and p is None) or generators:
-            return self.forward_native(logits, generators, k, p)
-
-        return lightop_sample(logits.contiguous(), k, p, generators), None
 
     def forward_cpu(
         self,
@@ -204,7 +151,7 @@ class TopKTopPSampler(nn.Module):
 
         The logits tensor may be updated in-place.
         """
-        logits = self.apply_top_k_top_p(logits, k, p)
+        logits = apply_top_k_top_p_pytorch(logits, k, p, allow_cpu_sync=True)
         logits_to_return = None
         if self.logprobs_mode == "processed_logits":
             logits_to_return = logits
@@ -213,14 +160,14 @@ class TopKTopPSampler(nn.Module):
 
         if len(generators) != logits.shape[0]:
             return compiled_random_sample(logits), logits_to_return
-        else:
-            probs = logits.softmax(dim=-1, dtype=torch.float32)
-            q = torch.empty_like(probs)
-            q.exponential_()
-            for i, generator in generators.items():
-                q[i].exponential_(generator=generator)
 
-            return probs.div_(q).argmax(dim=-1).view(-1), logits_to_return
+        probs = logits.softmax(dim=-1, dtype=torch.float32)
+        q = torch.empty_like(probs)
+        q.exponential_()
+        for i, generator in generators.items():
+            q[i].exponential_(generator=generator)
+
+        return probs.div_(q).argmax(dim=-1).view(-1), logits_to_return
 
     def forward_hip(
         self,
@@ -296,9 +243,23 @@ def compiled_random_sample(logits: torch.Tensor) -> torch.Tensor:
 
 
 def apply_top_k_top_p(
+    logits: torch.Tensor, k: torch.Tensor | None, p: torch.Tensor | None
+) -> torch.Tensor:
+    if p is None and k is None:
+        return logits
+
+    if HAS_TRITON and logits.shape[0] >= 8:
+        return apply_top_k_top_p_triton(logits, k, p)
+
+    # Use pytorch sort implementation for small batch sizes.
+    return apply_top_k_top_p_pytorch(logits, k, p)
+
+
+def apply_top_k_top_p_pytorch(
     logits: torch.Tensor,
     k: torch.Tensor | None,
     p: torch.Tensor | None,
+    allow_cpu_sync: bool = False,
 ) -> torch.Tensor:
     """Apply top-k and top-p masks to the logits.
 
@@ -311,8 +272,9 @@ def apply_top_k_top_p(
         if k is None:
             return logits
 
-        # Avoid sorting vocab for top-k only case.
-        return apply_top_k_only(logits, k)
+        if allow_cpu_sync:
+            # Avoid sorting vocab for top-k only case.
+            return apply_top_k_only(logits, k)
 
     logits_sort, logits_idx = logits.sort(dim=-1, descending=False)
 
@@ -334,18 +296,16 @@ def apply_top_k_top_p(
         logits_sort.masked_fill_(top_p_mask, -float("inf"))
 
     # Re-sort the probabilities.
-    logits = logits_sort.scatter(dim=-1, index=logits_idx, src=logits_sort)
-    return logits
+    return logits.scatter_(dim=-1, index=logits_idx, src=logits_sort)
 
 
-def apply_top_k_only(
-    logits: torch.Tensor,
-    k: torch.Tensor,
-) -> torch.Tensor:
+def apply_top_k_only(logits: torch.Tensor, k: torch.Tensor) -> torch.Tensor:
     """
     Apply top-k mask to the logits.
 
     This implementation doesn't involve sorting the entire vocab.
+    Note however that it involves a GPU->CPU sync which can be detrimental for
+    async scheduling performance.
 
     The logits tensor may be updated in-place.
     """
@@ -359,8 +319,7 @@ def apply_top_k_only(
     top_k_mask = logits.topk(max_top_k, dim=1).values.gather(1, k_index.long())
     # Handle non-topk rows.
     top_k_mask.masked_fill_(no_top_k_mask.unsqueeze(1), -float("inf"))
-    logits.masked_fill_(logits < top_k_mask, -float("inf"))
-    return logits
+    return logits.masked_fill_(logits < top_k_mask, -float("inf"))
 
 
 def random_sample(
@@ -385,47 +344,6 @@ def random_sample(
         for i, generator in generators.items():
             q[i].exponential_(generator=generator)
     return probs.div_(q).argmax(dim=-1).view(-1)
-
-
-def sample_top_k_top_p_reduced(
-    logits: torch.Tensor,
-    generators: dict[int, torch.Generator],
-    k: torch.Tensor,
-    p: torch.Tensor | None,
-    *,
-    max_top_k: int,
-) -> torch.Tensor:
-    """Sample logits from only the top-k candidate set."""
-    vocab_size = logits.shape[-1]
-    # Guard for extreme values that can defeat the purpose of this fast path.
-    if max_top_k <= 0 or max_top_k >= vocab_size:
-        masked_logits = apply_top_k_top_p(logits, k, p)
-        probs = masked_logits.softmax(dim=-1, dtype=torch.float32)
-        return random_sample(probs, generators)
-
-    topk = logits.topk(max_top_k, dim=-1)
-    topk_logits = topk.values
-    topk_indices = topk.indices
-
-    # Apply per-row top-k on the reduced candidate set.
-    k = k.to(torch.long)
-    arange_k = torch.arange(max_top_k, device=logits.device).unsqueeze(0)
-    keep_k = arange_k < k.unsqueeze(1)
-    topk_logits = topk_logits.masked_fill(~keep_k, -float("inf"))
-
-    # Convert to probabilities over the reduced candidate set.
-    probs = topk_logits.softmax(dim=-1, dtype=torch.float32)
-
-    if p is not None:
-        # Apply top-p in descending-logit order within the reduced set.
-        cumprob = torch.cumsum(probs, dim=-1)
-        cumprob_prev = cumprob - probs
-        keep_p = cumprob_prev < p.unsqueeze(1)
-        probs = probs * keep_p
-
-    # Sample position in reduced set, then map back to vocab ids.
-    pos = random_sample(probs, generators)
-    return topk_indices.gather(1, pos.unsqueeze(1)).squeeze(1)
 
 
 def flashinfer_sample(
@@ -472,46 +390,6 @@ def flashinfer_sample(
         # Both top-k and top-p.
         next_token_ids = flashinfer.sampling.top_k_top_p_sampling_from_logits(
             logits, k, p, deterministic=True
-        )
-
-    return next_token_ids.view(-1)
-
-def lightop_sample(
-    logits: torch.Tensor,
-    k: torch.Tensor | None,
-    p: torch.Tensor | None,
-    generators: dict[int, torch.Generator],
-) -> torch.Tensor:
-    """Sample from the logits using lightop.
-
-    Statistically, this function is equivalent to the `random_sample` function.
-    However, this function is faster because it avoids sorting the logits tensor
-    via rejection sampling.
-
-    NOTE: The outputs of this function do not necessarily match the outputs of
-    the `random_sample` function. It only guarantees that the outputs are
-    statistically equivalent.
-
-    NOTE: This function includes CPU-GPU synchronization, while `random_sample`
-    does not. Call this function at the end of the forward pass to minimize
-    the synchronization overhead.
-    """
-    assert not (k is None and p is None)
-    probs = logits.softmax(dim=-1, dtype=torch.float32)
-    if k is None:
-        # Top-p only.
-        next_token_ids = top_p_sampling_from_probs_lightop(
-            probs, p, deterministic=True
-        )
-    elif p is None:
-        # Top-k only.
-        next_token_ids = top_k_sampling_from_probs_lightop(
-            probs, k, deterministic=True
-        )
-    else:
-        # Both top-k and top-p.
-        next_token_ids = top_k_top_p_sampling_from_probs_lightop(
-            probs, k, p, deterministic=True
         )
 
     return next_token_ids.view(-1)

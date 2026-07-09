@@ -2,19 +2,18 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
 from collections.abc import Callable
-from typing import Optional
-from vllm import envs
+
 import torch
 from compressed_tensors.quantization import QuantizationArgs, QuantizationStrategy
 from torch.nn import Parameter
 
 from vllm._aiter_ops import rocm_aiter_ops
 from vllm.logger import init_logger
+from vllm.model_executor.kernels.linear import (
+    init_fp8_linear_kernel,
+)
 from vllm.model_executor.layers.quantization.compressed_tensors.schemes import (
     CompressedTensorsScheme,
-)
-from vllm.model_executor.layers.quantization.kernels.scaled_mm import (
-    init_fp8_linear_kernel,
 )
 from vllm.model_executor.layers.quantization.utils.fp8_utils import (
     W8A8BlockFp8LinearOp,
@@ -41,6 +40,7 @@ from vllm.model_executor.parameter import (
     ChannelQuantScaleParameter,
     PerTensorScaleParameter,
 )
+
 __all__ = ["CompressedTensorsW8A8Fp8"]
 
 strategy_to_parameter_type = {
@@ -159,10 +159,8 @@ class CompressedTensorsW8A8Fp8(CompressedTensorsScheme):
             weight, weight_scale, input_scale = process_fp8_weight_channel_strategy(
                 layer.weight, layer.weight_scale, getattr(layer, "input_scale", None)
             )
-            if envs.VLLM_W8A8_BACKEND == 3:
-                weight = weight.t().contiguous()
-            else:
-                weight = weight.t()
+            weight = weight.t()
+
         elif self.strategy == QuantizationStrategy.BLOCK:
             assert self.is_static_input_scheme is False
             weight, weight_scale = process_fp8_weight_block_strategy(
@@ -195,8 +193,6 @@ class CompressedTensorsW8A8Fp8(CompressedTensorsScheme):
         layer: torch.nn.Module,
         x: torch.Tensor,
         bias: torch.Tensor | None = None,
-        input_quant_args: Optional[list[torch.Tensor]] = None,
-        silu_quant_args: Optional[list[torch.Tensor]] = None, **_,
     ) -> torch.Tensor:
         if self.weight_block_size is not None:
             return self.w8a8_block_fp8_linear.apply(

@@ -10,15 +10,10 @@ import torch
 from vllm.model_executor.layers.activation import SiluAndMul
 from vllm.model_executor.layers.fused_moe import fused_experts
 from vllm.model_executor.layers.fused_moe.config import FusedMoEQuantConfig
-
+from vllm.model_executor.layers.quantization.utils.int8_utils import (
+    per_token_quant_int8,
+)
 from vllm.platforms import current_platform
-if not current_platform.is_rocm():
-    from vllm.model_executor.layers.quantization.utils.int8_utils import (
-        per_token_quant_int8,
-    )
-else:
-    from lmslim.layers.gemm.int8_utils import (
-        per_token_quant_int8)
 
 if current_platform.get_device_capability() < (7, 0):
     pytest.skip("INT8 Triton requires CUDA 7.0 or higher", allow_module_level=True)

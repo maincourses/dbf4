@@ -10,7 +10,6 @@ Run `pytest tests/quantization/test_register_quantization_config.py`.
 import logging
 from typing import Any
 
-import os
 import pytest
 import torch
 import torch.nn.functional as F
@@ -27,7 +26,6 @@ from vllm.model_executor.layers.quantization import (
 from vllm.model_executor.layers.quantization.base_config import (
     QuantizationConfig,  # noqa: E501
 )
-from ..utils import models_path_prefix
 
 
 class FakeQuantLinearMethod(UnquantizedLinearMethod):
@@ -123,7 +121,7 @@ def test_register_quantization_config(caplog_vllm):
 @pytest.mark.parametrize(
     argnames="model",
     argvalues=[
-        os.path.join(models_path_prefix, "meta-llama/Llama-3.2-1B-Instruct"),
+        "meta-llama/Llama-3.2-1B-Instruct",
     ],
 )
 def test_custom_quant(vllm_runner, model, monkeypatch):
@@ -135,16 +133,14 @@ def test_custom_quant(vllm_runner, model, monkeypatch):
         model_name=model, quantization="custom_quant", enforce_eager=True
     ) as llm:
 
-#     with vllm_runner(model_name=model,
-#                      quantization="custom_quant",
-#                      enforce_eager=True) as llm:
+        def check_model(model):
+            layer = model.model.layers[0]
+            qkv_proj = layer.self_attn.qkv_proj
 
-#         def check_model(model):
-#             layer = model.model.layers[0]
-#             qkv_proj = layer.self_attn.qkv_proj
+            # Check the quantization method is FakeQuantLinearMethod
+            assert isinstance(qkv_proj.quant_method, FakeQuantLinearMethod)
 
-#             # Check the quantization method is FakeQuantLinearMethod
-#             assert isinstance(qkv_proj.quant_method, FakeQuantLinearMethod)
+        llm.apply_model(check_model)
 
         output = llm.generate_greedy("Hello my name is", max_tokens=1)
         assert output

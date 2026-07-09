@@ -4,7 +4,6 @@ import copy
 import json
 
 import pytest
-import os
 
 from vllm.sampling_params import SamplingParams
 from vllm.tokenizers.mistral import MistralTokenizer
@@ -14,16 +13,15 @@ from vllm.tool_parsers.mistral_tool_parser import (
 )
 
 from ...utils import check_logprobs_close
-from ....utils import models_path_prefix
 
 MODELS = [
-    os.path.join(models_path_prefix, "mistralai/Mistral-7B-Instruct-v0.3"),
+    "mistralai/Mistral-7B-Instruct-v0.3",
 ]
 
 MISTRAL_FORMAT_MODELS = [
-    os.path.join(models_path_prefix, "mistralai/Mistral-7B-Instruct-v0.3"),
+    "mistralai/Mistral-7B-Instruct-v0.3",
     # uses the v3-Tekken tokenizer
-    os.path.join(models_path_prefix, "mistralai/Ministral-8B-Instruct-2410"),
+    "mistralai/Ministral-8B-Instruct-2410",
     # Mistral-Nemo is too big for CI, but passes locally
     # "mistralai/Mistral-Nemo-Instruct-2407"
 ]
@@ -89,7 +87,7 @@ MSGS = [
     {
         "role": "user",
         "content": "Could you please rewrite the below article? \n\n My English needs "
-        "improvving, maybe I make errors.",
+        "improving, maybe I make errors.",
     },
     {
         "role": "assistant",
@@ -100,7 +98,7 @@ MSGS = [
                 "type": "function",
                 "function": {
                     "name": "rewrite",
-                    "arguments": '{"text":"My English needs improvving, maybe '
+                    "arguments": '{"text":"My English needs improving, maybe '
                     'I make errors."}',
                 },
             }

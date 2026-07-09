@@ -30,7 +30,6 @@ import torch
 from torch import nn
 from transformers import PretrainedConfig
 
-from vllm.attention.layer import Attention
 from vllm.compilation.decorators import support_torch_compile
 from vllm.config import CacheConfig, ModelConfig, VllmConfig
 from vllm.distributed import (
@@ -38,8 +37,9 @@ from vllm.distributed import (
     get_tensor_model_parallel_world_size,
     tensor_model_parallel_all_reduce,
 )
+from vllm.model_executor.layers.attention import Attention
 from vllm.model_executor.layers.fused_moe import FusedMoE
-from vllm.model_executor.layers.layernorm import RMSNorm, FusedRMSNormQuant
+from vllm.model_executor.layers.layernorm import RMSNorm
 from vllm.model_executor.layers.linear import (
     QKVParallelLinear,
     ReplicatedLinear,
@@ -58,7 +58,6 @@ from vllm.model_executor.model_loader.weight_utils import (
     maybe_remap_kv_scale_name,
 )
 from vllm.sequence import IntermediateTensors
-from vllm import envs
 
 from .interfaces import SupportsLoRA, SupportsPP
 from .utils import (
@@ -230,10 +229,8 @@ class MiniMaxM2Attention(nn.Module):
         self,
         positions: torch.Tensor,
         hidden_states: torch.Tensor,
-        iqis: tuple[torch.Tensor, torch.Tensor] | None = None
     ) -> torch.Tensor:
-        # iqis: (input_quant, input_scale)
-        qkv, _ = self.qkv_proj(hidden_states, iqis = iqis)
+        qkv, _ = self.qkv_proj(hidden_states)
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
         q, k = MiniMaxText01RMSNormTP.forward_qk(
             self.q_norm, self.k_norm, q.contiguous(), k.contiguous()
@@ -285,42 +282,10 @@ class MiniMaxM2DecoderLayer(nn.Module):
             quant_config=quant_config,
             prefix=f"{prefix}.mlp",
         )
-        if envs.USE_FUSED_RMS_QUANT:
-            self.input_layernorm = FusedRMSNormQuant(config.hidden_size, eps=config.rms_norm_eps)
-        else:
-            self.input_layernorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-
+        self.input_layernorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.post_attention_layernorm = RMSNorm(
             config.hidden_size, eps=config.rms_norm_eps
         )
-
-    def rms_quant_fusion_forward(
-        self,
-        positions: torch.Tensor,
-        hidden_states: torch.Tensor,
-        residual: torch.Tensor | None,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        if residual is None:
-            residual = hidden_states.clone()
-            input_quant, input_scale, _ = self.input_layernorm(
-                x = hidden_states, 
-                residual = None, 
-                quant_dtype = torch.int8,
-                update_input = False
-            )
-        else:
-            input_quant, input_scale, residual = self.input_layernorm(
-                x = hidden_states, 
-                residual = residual, 
-                quant_dtype = torch.int8,
-                update_input = False
-            )
-        hidden_states = self.self_attn(
-            positions = positions,
-            hidden_states = hidden_states,
-            iqis = (input_quant, input_scale)
-        )
-        return hidden_states, residual
 
     def forward(
         self,
@@ -328,21 +293,16 @@ class MiniMaxM2DecoderLayer(nn.Module):
         hidden_states: torch.Tensor,
         residual: torch.Tensor | None,
     ) -> torch.Tensor:
-        if envs.USE_FUSED_RMS_QUANT:
-            hidden_states, residual = self.rms_quant_fusion_forward(
-                positions, hidden_states, residual
-            )
+        # Self Attention
+        if residual is None:
+            residual = hidden_states
+            hidden_states = self.input_layernorm(hidden_states)
         else:
-            # Self Attention
-            if residual is None:
-                residual = hidden_states
-                hidden_states = self.input_layernorm(hidden_states)
-            else:
-                hidden_states, residual = self.input_layernorm(hidden_states, residual)
-            hidden_states = self.self_attn(
-                positions=positions,
-                hidden_states=hidden_states,
-            )
+            hidden_states, residual = self.input_layernorm(hidden_states, residual)
+        hidden_states = self.self_attn(
+            positions=positions,
+            hidden_states=hidden_states,
+        )
 
         # Fully Connected
         hidden_states, residual = self.post_attention_layernorm(hidden_states, residual)
@@ -402,7 +362,7 @@ class MiniMaxM2Model(nn.Module):
 
     def forward(
         self,
-        input_ids: torch.Tensor,
+        input_ids: torch.Tensor | None,
         positions: torch.Tensor,
         intermediate_tensors: IntermediateTensors | None,
         inputs_embeds: torch.Tensor | None = None,
@@ -561,7 +521,7 @@ class MiniMaxM2ForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
 
     def forward(
         self,
-        input_ids: torch.Tensor,
+        input_ids: torch.Tensor | None,
         positions: torch.Tensor,
         intermediate_tensors: IntermediateTensors | None = None,
         inputs_embeds: torch.Tensor | None = None,

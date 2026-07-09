@@ -5,7 +5,6 @@ from http import HTTPStatus
 from unittest.mock import MagicMock
 
 import pytest
-import os
 
 from vllm.config import ModelConfig
 from vllm.engine.protocol import EngineClient
@@ -19,10 +18,8 @@ from vllm.entrypoints.serve.lora.protocol import (
     UnloadLoRAAdapterRequest,
 )
 from vllm.lora.request import LoRARequest
-from ...utils import models_path_prefix
 
-
-MODEL_NAME = os.path.join(models_path_prefix, "hmellor/tiny-random-LlamaForCausalLM")
+MODEL_NAME = "hmellor/tiny-random-LlamaForCausalLM"
 BASE_MODEL_PATHS = [BaseModelPath(name=MODEL_NAME, model_path=MODEL_NAME)]
 LORA_LOADING_SUCCESS_MESSAGE = "Success: LoRA adapter '{lora_name}' added successfully."
 LORA_UNLOADING_SUCCESS_MESSAGE = (

@@ -10,13 +10,12 @@ AsyncLLMEngine are working correctly.
 """
 
 import lm_eval
-import os
 
 from vllm.platforms import current_platform
 
-from ....utils import RemoteOpenAIServer, models_path_prefix
+from ....utils import RemoteOpenAIServer
 
-MODEL_NAME = os.path.join(models_path_prefix, "Qwen/Qwen2-1.5B-Instruct")
+MODEL_NAME = "Qwen/Qwen2-1.5B-Instruct"
 NUM_CONCURRENT = 500
 TASK = "gsm8k"
 FILTER = "exact_match,strict-match"

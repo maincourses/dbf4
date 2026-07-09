@@ -33,15 +33,12 @@ import torch
 from torch import nn
 from transformers import Qwen2Config
 
-import os
-import re
-
-from vllm.attention.layer import Attention
 from vllm.compilation.decorators import support_torch_compile
 from vllm.config import CacheConfig, VllmConfig
 from vllm.distributed import get_pp_group, get_tensor_model_parallel_world_size
 from vllm.model_executor.layers.activation import SiluAndMul
-from vllm.model_executor.layers.attention.encoder_only_attention import (
+from vllm.model_executor.layers.attention import (
+    Attention,
     EncoderOnlyAttention,
 )
 from vllm.model_executor.layers.layernorm import RMSNorm
@@ -65,7 +62,13 @@ from vllm.sequence import IntermediateTensors
 from vllm.transformers_utils.config import is_interleaved, set_default_rope_theta
 from vllm.v1.attention.backend import AttentionType
 
-from .interfaces import SupportsEagle3, SupportsLoRA, SupportsPP
+from .interfaces import (
+    EagleModelMixin,
+    SupportsEagle,
+    SupportsEagle3,
+    SupportsLoRA,
+    SupportsPP,
+)
 from .utils import (
     AutoWeightsLoader,
     PPMissingLayer,
@@ -75,8 +78,6 @@ from .utils import (
     make_layers,
     maybe_prefix,
 )
-from vllm import _custom_ops as ops
-from vllm.model_executor.utils import pad_weight, gemm_bank_conf
 
 
 class Qwen2MLP(nn.Module):
@@ -205,19 +206,12 @@ class Qwen2Attention(nn.Module):
             else {},
         )
 
-        self.quant_method = None
-        if quant_config is not None:
-            self.quant_method=quant_config.get_name()
-            self.quant_config=quant_config
-
     def forward(
         self,
         positions: torch.Tensor,
         hidden_states: torch.Tensor,
     ) -> torch.Tensor:
         qkv, _ = self.qkv_proj(hidden_states)
-        # if os.environ.get('FA_PAD') == '1' and self.quant_method is None:
-        #     qkv = qkv[...,:-32]
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
 
         # Apply QK normalization if enabled (before RoPE)
@@ -361,7 +355,7 @@ def qwen_2_model_invariants(
     },
     shape_invariants=qwen_2_model_invariants,
 )
-class Qwen2Model(nn.Module):
+class Qwen2Model(nn.Module, EagleModelMixin):
     def __init__(
         self,
         *,
@@ -421,25 +415,13 @@ class Qwen2Model(nn.Module):
             self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         else:
             self.norm = PPMissingLayer()
-            
-        self.quant_method = None
-        if quant_config is not None:
-            self.quant_method=quant_config.get_name()
-            self.quant_config=quant_config
-            
-        self.use_llama_nn = os.environ.get('LLAMA_NN') == '1'
-        self.use_gemm_pad = os.environ.get('GEMM_PAD') == '1'
-        self.use_fa_pad = os.environ.get('FA_PAD') == '1'
-        self.use_awq_pad = os.environ.get('AWQ_PAD') == '1'
-
-        self.aux_hidden_state_layers = tuple[int, ...]()
 
     def embed_input_ids(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self.embed_tokens(input_ids)
 
     def forward(
         self,
-        input_ids: torch.Tensor,
+        input_ids: torch.Tensor | None,
         positions: torch.Tensor,
         intermediate_tensors: IntermediateTensors | None = None,
         inputs_embeds: torch.Tensor | None = None,
@@ -455,13 +437,14 @@ class Qwen2Model(nn.Module):
             hidden_states = intermediate_tensors["hidden_states"]
             residual = intermediate_tensors["residual"]
 
-        aux_hidden_states = []
+        aux_hidden_states = self._maybe_add_hidden_state([], 0, hidden_states, residual)
         for idx, layer in enumerate(
             islice(self.layers, self.start_layer, self.end_layer)
         ):
-            if idx in self.aux_hidden_state_layers:
-                aux_hidden_states.append(hidden_states + residual)
             hidden_states, residual = layer(positions, hidden_states, residual)
+            self._maybe_add_hidden_state(
+                aux_hidden_states, idx + 1, hidden_states, residual
+            )
 
         if not get_pp_group().is_last_rank:
             return IntermediateTensors(
@@ -487,9 +470,6 @@ class Qwen2Model(nn.Module):
         params_dict = dict(self.named_parameters(remove_duplicate=False))
         loaded_params: set[str] = set()
         for name, loaded_weight in weights:
-            if self.use_llama_nn:
-                current_count = loaded_weight.current_count 
-                total_count = loaded_weight.total_count
             if "rotary_emb.inv_freq" in name:
                 continue
             if self.quant_config is not None and (
@@ -541,59 +521,12 @@ class Qwen2Model(nn.Module):
                 weight_loader = getattr(param, "weight_loader", default_weight_loader)
                 weight_loader(param, loaded_weight)
             loaded_params.add(name)
-            
-        if self.use_llama_nn and self.quant_method is None and current_count==total_count:
-            lay_key_words = [
-                "self_attn.qkv_proj.weight",
-                "self_attn.o_proj.weight",
-                "mlp.gate_up_proj.weight",
-                "mlp.down_proj.weight",
-            ]
-            combined_words = "|".join(lay_key_words)
-            
-            # lay_qkv_words = ["self_attn.qkv_proj.weight"]   
-            # qkv_words = "|".join(lay_qkv_words)  
-            
-            # lay_qkv_bias_words = ["self_attn.qkv_proj.bias"]   
-            # qkv_bias_words = "|".join(lay_qkv_bias_words) 
-            
-            # for layername, weight in params_dict.items():
-            # for layername in loaded_params:
-            for layername in params_dict.keys():
-                weight = params_dict[layername]
-                if "lm_head.weight" in layername and weight.shape[1] >= 3584:
-                    lay_key_words.append("lm_head.weight")
-                    combined_words = "|".join(lay_key_words)
-                    os.environ['LM_NN'] = '1'  
-                else:
-                    os.environ['LM_NN'] = '0' 
-                # if self.use_fa_pad and (re.findall(qkv_bias_words, layername)):
-                #     weight.data = pad_weight(weight.data, 32)
-                    
-                matches = re.findall(combined_words, layername)
-                if matches:   
-                    # if self.use_gemm_pad and gemm_bank_conf(weight.data.shape[0]):
-                    #     weight.data = pad_weight(weight.data, 32)  
-                    
-                    # if self.use_fa_pad and (re.findall(qkv_words, layername)):
-                    #     if not gemm_bank_conf(weight.data.shape[0]):
-                    #         weight.data = pad_weight(weight.data, 32)
-                        
-                    _weight = torch.zeros_like(weight.data)
-                    ori_shape =_weight.shape
-                    
-                    ops.trans_w16_gemm(_weight, weight.data, _weight.shape[0], _weight.shape[1])
-                    weight.data.copy_(_weight)
-                    
-                    weight.data=weight.data.reshape(ori_shape[1],-1)
-        else:
-            os.environ['LM_NN'] = '0'
-            os.environ['LLAMA_NN'] = '0'
-                    
         return loaded_params
 
 
-class Qwen2ForCausalLM(nn.Module, SupportsLoRA, SupportsPP, SupportsEagle3):
+class Qwen2ForCausalLM(
+    nn.Module, SupportsLoRA, SupportsPP, SupportsEagle, SupportsEagle3
+):
     packed_modules_mapping = {
         "qkv_proj": [
             "q_proj",
@@ -632,16 +565,6 @@ class Qwen2ForCausalLM(nn.Module, SupportsLoRA, SupportsPP, SupportsEagle3):
             self.lm_head = PPMissingLayer()
 
         self.logits_processor = LogitsProcessor(config.vocab_size)
-        
-        self.quant_method = None
-        if quant_config is not None:
-            self.quant_method=quant_config.get_name()
-            self.quant_config=quant_config
-               
-        self.use_llama_nn = os.environ.get('LLAMA_NN') == '1'
-        self.use_gemm_pad = os.environ.get('GEMM_PAD') == '1'
-        self.use_fa_pad = os.environ.get('FA_PAD') == '1'
-        self.use_awq_pad = os.environ.get('AWQ_PAD') == '1'
 
         self.make_empty_intermediate_tensors = (
             self.model.make_empty_intermediate_tensors
@@ -650,16 +573,9 @@ class Qwen2ForCausalLM(nn.Module, SupportsLoRA, SupportsPP, SupportsEagle3):
     def embed_input_ids(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self.model.embed_input_ids(input_ids)
 
-    def set_aux_hidden_state_layers(self, layers: tuple[int, ...]) -> None:
-        self.model.aux_hidden_state_layers = layers
-
-    def get_eagle3_aux_hidden_state_layers(self) -> tuple[int, ...]:
-        num_layers = len(self.model.layers)
-        return (2, num_layers // 2, num_layers - 3)
-
     def forward(
         self,
-        input_ids: torch.Tensor,
+        input_ids: torch.Tensor | None,
         positions: torch.Tensor,
         intermediate_tensors: IntermediateTensors | None = None,
         inputs_embeds: torch.Tensor | None = None,

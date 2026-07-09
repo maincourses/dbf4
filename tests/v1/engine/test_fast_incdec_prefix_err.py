@@ -1,13 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
-import os
 from transformers import AutoTokenizer
 
 from vllm.sampling_params import SamplingParams
 from vllm.v1.engine import EngineCoreRequest
 from vllm.v1.engine.detokenizer import IncrementalDetokenizer
-from utils import models_path_prefix
 
 # ruff: noqa: E501
 
@@ -22,7 +20,7 @@ def test_fast_inc_detok_invalid_utf8_err_case():
     Thanks to reproducer from @fpaupier:
     https://gist.github.com/fpaupier/0ed1375bd7633c5be6c894b1c7ac1be3.
     """
-    tokenizer = AutoTokenizer.from_pretrained(os.path.join(models_path_prefix, "google/gemma-3-1b-it"))
+    tokenizer = AutoTokenizer.from_pretrained("google/gemma-3-1b-it")
 
     # Create a test request
     prompt_token_ids = [107, 4606, 236787, 107]
@@ -34,7 +32,6 @@ def test_fast_inc_detok_invalid_utf8_err_case():
         mm_features=None,
         sampling_params=params,
         pooling_params=None,
-        eos_token_id=None,
         arrival_time=0.0,
         lora_request=None,
         cache_salt=None,

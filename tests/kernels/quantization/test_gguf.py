@@ -4,7 +4,6 @@
 from pathlib import Path
 
 import pytest
-import os
 import torch
 from gguf import GGMLQuantizationType, GGUFReader, ReaderTensor, dequantize
 from huggingface_hub import snapshot_download
@@ -12,13 +11,10 @@ from huggingface_hub import snapshot_download
 import vllm._custom_ops as ops
 from vllm.model_executor.layers.fused_moe import fused_experts
 from vllm.model_executor.layers.quantization.gguf import _fused_moe_gguf
-from ...utils import models_path_prefix
 from vllm.utils.torch_utils import set_random_seed
 
-# GGUF_SAMPLE = snapshot_download("Isotr0py/test-gguf-sample")
-# GGUF_SAMPLE_MOE = snapshot_download("SzymonOzog/test-gguf-moe-sample")
-GGUF_SAMPLE = os.path.join(models_path_prefix, "Isotr0py/test-gguf-sample")
-GGUF_SAMPLE_MOE = os.path.join(models_path_prefix, "SzymonOzog/test-gguf-moe-sample")
+GGUF_SAMPLE = snapshot_download("Isotr0py/test-gguf-sample")
+GGUF_SAMPLE_MOE = snapshot_download("SzymonOzog/test-gguf-moe-sample")
 
 
 def get_gguf_sample_tensors(

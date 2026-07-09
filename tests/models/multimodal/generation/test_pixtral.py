@@ -4,7 +4,6 @@ import json
 from dataclasses import asdict
 from typing import TYPE_CHECKING, Any
 
-import os
 import pytest
 from mistral_common.multimodal import download_image
 from mistral_common.protocol.instruct.chunk import ImageURLChunk
@@ -19,15 +18,15 @@ from vllm.multimodal import MultiModalDataBuiltins
 from vllm.platforms import current_platform
 
 from ....utils import VLLM_PATH, large_gpu_test
-from ...utils import check_logprobs_close, models_path_prefix
+from ...utils import check_logprobs_close
 
 if TYPE_CHECKING:
     from _typeshed import StrPath
 
-PIXTRAL_ID = os.path.join(models_path_prefix, "mistralai/Pixtral-12B-2409")
-MISTRAL_SMALL_3_1_ID = os.path.join(models_path_prefix, "mistralai/Mistral-Small-3.1-24B-Instruct-2503")
+PIXTRAL_ID = "mistralai/Pixtral-12B-2409"
+MISTRAL_SMALL_3_1_ID = "mistralai/Mistral-Small-3.1-24B-Instruct-2503"
 
-MODELS = [os.path.join(models_path_prefix, PIXTRAL_ID), os.path.join(models_path_prefix, MISTRAL_SMALL_3_1_ID)]
+MODELS = [PIXTRAL_ID, MISTRAL_SMALL_3_1_ID]
 
 IMG_URLS = [
     "237-400x300.jpg",  # "https://huggingface.co/datasets/Isotr0py/mistral-test-images/resolve/main/237-400x300.jpg",
@@ -92,7 +91,7 @@ def _create_engine_inputs(urls: list[str]) -> TokensPrompt:
 def _create_engine_inputs_hf(urls: list[str]) -> TextPrompt:
     msg = _create_msg_format_hf(urls)
 
-    tokenizer = AutoProcessor.from_pretrained(os.path.join(models_path_prefix, "mistral-community/pixtral-12b"))
+    tokenizer = AutoProcessor.from_pretrained("mistral-community/pixtral-12b")
     prompt = tokenizer.apply_chat_template(msg)
 
     images = []

@@ -9,13 +9,11 @@ Run `pytest tests/engine/test_stop_reason.py`.
 """
 
 import pytest
-import os
 import transformers
 
 from vllm import SamplingParams
-from ..utils import models_path_prefix
 
-MODEL = os.path.join(models_path_prefix, "distilbert/distilgpt2")
+MODEL = "distilbert/distilgpt2"
 STOP_STR = "."
 SEED = 42
 MAX_TOKENS = 1024

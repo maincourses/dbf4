@@ -6,14 +6,11 @@
 from dataclasses import dataclass
 
 import pytest
-import os
 
 import vllm
 from vllm.distributed import cleanup_dist_env_and_memory
 from vllm.lora.request import LoRARequest
-
 from vllm.platforms import current_platform
-from ..utils import models_path_prefix
 
 
 @dataclass
@@ -27,16 +24,16 @@ MODELS: list[ModelWithQuantization]
 if current_platform.is_rocm():
     MODELS = [
         ModelWithQuantization(
-            model_path=os.path.join(models_path_prefix, "TheBloke/TinyLlama-1.1B-Chat-v0.3-GPTQ"), quantization="gptq"
+            model_path="TheBloke/TinyLlama-1.1B-Chat-v0.3-GPTQ", quantization="gptq"
         ),
     ]
 else:
     MODELS = [
         ModelWithQuantization(
-            model_path=os.path.join(models_path_prefix, "TheBloke/TinyLlama-1.1B-Chat-v0.3-AWQ"), quantization="awq"
+            model_path="TheBloke/TinyLlama-1.1B-Chat-v0.3-AWQ", quantization="awq"
         ),
         ModelWithQuantization(
-            model_path=os.path.join(models_path_prefix, "TheBloke/TinyLlama-1.1B-Chat-v0.3-GPTQ"), quantization="gptq"
+            model_path="TheBloke/TinyLlama-1.1B-Chat-v0.3-GPTQ", quantization="gptq"
         ),
     ]
 

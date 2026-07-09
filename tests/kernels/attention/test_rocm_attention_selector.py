@@ -52,22 +52,22 @@ def test_selector(monkeypatch: pytest.MonkeyPatch):
     attention_config = AttentionConfig(backend=AttentionBackendEnum.ROCM_AITER_MLA)
     vllm_config = VllmConfig(attention_config=attention_config)
 
-    # with set_current_vllm_config(vllm_config):
-    #     backend = get_attn_backend(576, torch.bfloat16, "auto", 1, False, use_mla=True)
-    #     assert backend.get_name() == "ROCM_AITER_MLA"
+    with set_current_vllm_config(vllm_config):
+        backend = get_attn_backend(576, torch.bfloat16, "auto", 1, False, use_mla=True)
+        assert backend.get_name() == "ROCM_AITER_MLA"
 
-    # # If attention backend is None
-    # # If use_mla is true
-    # # If VLLM_ROCM_USE_AITER is enabled
-    # # The selected backend is ROCM_AITER_MLA
-    # with monkeypatch.context() as m:
-    #     m.setenv("VLLM_ROCM_USE_AITER", "1")
+    # If attention backend is None
+    # If use_mla is true
+    # If VLLM_ROCM_USE_AITER is enabled
+    # The selected backend is ROCM_AITER_MLA
+    with monkeypatch.context() as m:
+        m.setenv("VLLM_ROCM_USE_AITER", "1")
 
-    #     attention_config = AttentionConfig(backend=None)
-    #     vllm_config = VllmConfig(attention_config=attention_config)
+        attention_config = AttentionConfig(backend=None)
+        vllm_config = VllmConfig(attention_config=attention_config)
 
-    #     with set_current_vllm_config(vllm_config):
-    #         backend = get_attn_backend(
-    #             576, torch.bfloat16, "auto", 1, False, use_mla=True
-    #         )
-    #         assert backend.get_name() == "ROCM_AITER_MLA"
+        with set_current_vllm_config(vllm_config):
+            backend = get_attn_backend(
+                576, torch.bfloat16, "auto", 1, False, use_mla=True
+            )
+            assert backend.get_name() == "ROCM_AITER_MLA"

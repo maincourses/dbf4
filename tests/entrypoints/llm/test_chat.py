@@ -2,15 +2,12 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 import weakref
 
-import os
 import pytest
 
 from vllm import LLM
 from vllm.distributed import cleanup_dist_env_and_memory
 from vllm.sampling_params import SamplingParams
 
-
-from utils import models_path_prefix
 from ..openai.test_vision import TEST_IMAGE_ASSETS
 
 
@@ -36,7 +33,7 @@ def llm_for_failure_test():
     # pytest caches the fixture so we use weakref.proxy to
     # enable garbage collection
     llm = LLM(
-        model=os.path.join(models_path_prefix, "meta-llama/Llama-3.2-1B-Instruct"),
+        model="meta-llama/Llama-3.2-1B-Instruct",
         enforce_eager=True,
         seed=0,
         max_model_len=128,
@@ -85,7 +82,7 @@ def vision_llm():
     # pytest caches the fixture so we use weakref.proxy to
     # enable garbage collection
     llm = LLM(
-        model=os.path.join(models_path_prefix, "microsoft/Phi-3.5-vision-instruct"),
+        model="microsoft/Phi-3.5-vision-instruct",
         max_model_len=4096,
         max_num_seqs=5,
         enforce_eager=True,
@@ -198,18 +195,15 @@ def test_chat_batch_failure_cleanup(llm_for_failure_test):
     valid_msg = [{"role": "user", "content": "Hello"}]
     long_text = "This is a very long text to test the error " * 50
     invalid_msg = [{"role": "user", "content": long_text}]
-    batch_1 = [
-        valid_msg,
-        valid_msg,
-        invalid_msg,
-    ]
-    batch_2 = [
-        valid_msg,
-        valid_msg,
-    ]
+
+    batch_1 = [valid_msg, valid_msg, invalid_msg]
+    batch_2 = [valid_msg, valid_msg]
     sampling_params = SamplingParams(temperature=0, max_tokens=10)
-    with pytest.raises(ValueError, match="longer than the maximum model length"):
+
+    with pytest.raises(ValueError, match="maximum context length is"):
         llm.chat(batch_1, sampling_params=sampling_params)
+    assert llm.llm_engine.get_num_unfinished_requests() == 0
+
     outputs_2 = llm.chat(batch_2, sampling_params=sampling_params)
     assert len(outputs_2) == len(batch_2)
     assert llm.llm_engine.get_num_unfinished_requests() == 0

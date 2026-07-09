@@ -24,17 +24,20 @@
 """Inference-only Qwen3 model compatible with HuggingFace weights."""
 
 from collections.abc import Iterable
-from typing import Any, Optional
+from typing import Any
 
 import torch
 from torch import nn
 from transformers import Qwen3Config
 
-from vllm.attention.layer import Attention
 from vllm.compilation.decorators import support_torch_compile
 from vllm.config import CacheConfig, VllmConfig
 from vllm.distributed import get_pp_group, get_tensor_model_parallel_world_size
 from vllm.logger import init_logger
+from vllm.model_executor.layers.attention.encoder_only_attention import (
+    Attention,
+    EncoderOnlyAttention,
+)
 from vllm.model_executor.layers.layernorm import RMSNorm
 from vllm.model_executor.layers.linear import QKVParallelLinear, RowParallelLinear
 from vllm.model_executor.layers.logits_processor import LogitsProcessor
@@ -45,14 +48,13 @@ from vllm.sequence import IntermediateTensors
 from vllm.transformers_utils.config import set_default_rope_theta
 from vllm.v1.attention.backend import AttentionType
 
-from .interfaces import SupportsEagle3, SupportsLoRA, SupportsPP
+from .interfaces import SupportsEagle, SupportsEagle3, SupportsLoRA, SupportsPP
 from .qwen2 import Qwen2MLP as Qwen3MLP
 from .qwen2 import Qwen2Model
-
 from .utils import AutoWeightsLoader, PPMissingLayer, extract_layer_index, maybe_prefix
-import vllm.envs as envs
-from vllm import _custom_ops as ops
+
 logger = init_logger(__name__)
+
 
 class Qwen3Attention(nn.Module):
     def __init__(
@@ -116,7 +118,12 @@ class Qwen3Attention(nn.Module):
             rope_parameters=rope_parameters,
             dual_chunk_attention_config=dual_chunk_attention_config,
         )
-        self.attn = Attention(
+        attn_cls = (
+            EncoderOnlyAttention
+            if attn_type == AttentionType.ENCODER_ONLY
+            else Attention
+        )
+        self.attn = attn_cls(
             self.num_heads,
             self.head_dim,
             self.scaling,
@@ -142,81 +149,14 @@ class Qwen3Attention(nn.Module):
     ) -> torch.Tensor:
         qkv, _ = self.qkv_proj(hidden_states)
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
-        if envs.VLLM_USE_FUSED_RMS_ROPE and positions.ndim == 1:
-            # Fused RMSNorm + RoPE path through custom op.
-            cos_sin_cache = self.rotary_emb.cos_sin_cache
-            if (cos_sin_cache.device != q.device
-                    or cos_sin_cache.dtype != q.dtype):
-                cos_sin_cache = cos_sin_cache.to(q.device,
-                                                    dtype=q.dtype,
-                                                    non_blocking=True)
-                # Persist the converted cache so we don't re-copy/re-allocate
-                # on every forward when the original buffer starts on CPU.
-                self.rotary_emb.cos_sin_cache = cos_sin_cache
-            q = q.contiguous()
-            k = k.contiguous()
-            torch.ops.vllm.rms_rotary_embedding_fuse(
-                positions,
-                q,
-                k,
-                self.head_dim,
-                cos_sin_cache,
-                self.rotary_emb.is_neox_style,
-                self.q_norm.weight,
-                self.k_norm.weight,
-                None,
-                None,
-                self.q_norm.variance_epsilon,
-            )
-        elif envs.VLLM_USE_FUSED_RMS_ROPE and positions.ndim == 2:
-            # Fused RMSNorm + M-RoPE path through custom op.
-            mrope_section = getattr(self.rotary_emb, "mrope_section", None)
-            assert len(mrope_section) == 3
-            cos_sin_cache = self.rotary_emb.cos_sin_cache
-            if (cos_sin_cache.device != q.device
-                    or cos_sin_cache.dtype != q.dtype):
-                cos_sin_cache = cos_sin_cache.to(q.device,
-                                                    dtype=q.dtype,
-                                                    non_blocking=True)
-                self.rotary_emb.cos_sin_cache = cos_sin_cache
-            cos_sin = cos_sin_cache[positions]
-            cos, sin = cos_sin.chunk(2, dim=-1)
-            q = q.contiguous()
-            k = k.contiguous()
-            cos = cos.contiguous()
-            sin = sin.contiguous()
-            torch.ops.vllm.rms_mrope_fuse(
-                q,
-                k,
-                cos,
-                sin,
-                self.head_dim,
-                self.rotary_emb.rotary_dim,
-                mrope_section[0],
-                mrope_section[1],
-                mrope_section[2],
-                self.rotary_emb.mrope_interleaved,
-                self.q_norm.weight,
-                self.k_norm.weight,
-                self.q_norm.variance_epsilon,
-                None,
-                None,
-            )
-        else:
-            # Add qk-norm
-            q_by_head = q.view(*q.shape[:-1], q.shape[-1] // self.head_dim, self.head_dim)
-            if envs.VLLM_USE_APEX_RN:
-                q_by_head = self.q_norm.forward_apex(q_by_head)
-            else:
-                q_by_head = self.q_norm.forward_cuda(q_by_head)
-            q = q_by_head.view(q.shape)
-            k_by_head = k.view(*k.shape[:-1], k.shape[-1] // self.head_dim, self.head_dim)
-            if envs.VLLM_USE_APEX_RN:
-                k_by_head = self.k_norm.forward_apex(k_by_head)
-            else:
-                k_by_head = self.k_norm.forward_cuda(k_by_head)
-            k = k_by_head.view(k.shape)
-            q, k = self.rotary_emb(positions, q, k)
+        # Add qk-norm
+        q_by_head = q.view(*q.shape[:-1], q.shape[-1] // self.head_dim, self.head_dim)
+        q_by_head = self.q_norm(q_by_head)
+        q = q_by_head.view(q.shape)
+        k_by_head = k.view(*k.shape[:-1], k.shape[-1] // self.head_dim, self.head_dim)
+        k_by_head = self.k_norm(k_by_head)
+        k = k_by_head.view(k.shape)
+        q, k = self.rotary_emb(positions, q, k)
         attn_output = self.attn(q, k, v)
         output, _ = self.o_proj(attn_output)
         return output
@@ -318,7 +258,9 @@ class Qwen3Model(Qwen2Model):
         )
 
 
-class Qwen3ForCausalLM(nn.Module, SupportsLoRA, SupportsPP, SupportsEagle3):
+class Qwen3ForCausalLM(
+    nn.Module, SupportsLoRA, SupportsPP, SupportsEagle, SupportsEagle3
+):
     packed_modules_mapping = {
         "qkv_proj": [
             "q_proj",
@@ -329,6 +271,11 @@ class Qwen3ForCausalLM(nn.Module, SupportsLoRA, SupportsPP, SupportsEagle3):
             "gate_proj",
             "up_proj",
         ],
+    }
+
+    embedding_modules = {
+        "embed_tokens": "input_embeddings",
+        "lm_head": "output_embeddings",
     }
 
     def __init__(self, *, vllm_config: VllmConfig, prefix: str = ""):
@@ -362,19 +309,12 @@ class Qwen3ForCausalLM(nn.Module, SupportsLoRA, SupportsPP, SupportsEagle3):
             self.model.make_empty_intermediate_tensors
         )
 
-    def set_aux_hidden_state_layers(self, layers: tuple[int, ...]) -> None:
-        self.model.aux_hidden_state_layers = layers
-
-    def get_eagle3_aux_hidden_state_layers(self) -> tuple[int, ...]:
-        num_layers = len(self.model.layers)
-        return (2, num_layers // 2, num_layers - 3)
-
     def embed_input_ids(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self.model.embed_input_ids(input_ids)
 
     def forward(
         self,
-        input_ids: torch.Tensor,
+        input_ids: torch.Tensor | None,
         positions: torch.Tensor,
         intermediate_tensors: IntermediateTensors | None = None,
         inputs_embeds: torch.Tensor | None = None,

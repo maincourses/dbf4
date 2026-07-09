@@ -8,11 +8,9 @@ Run `pytest tests/quantization/test_configs.py --forked`.
 from dataclasses import dataclass
 
 import pytest
-import os
 
 from vllm.config import ModelConfig
 from vllm.platforms import current_platform
-from tests.utils import models_path_prefix
 
 
 @dataclass
@@ -27,45 +25,44 @@ MODEL_ARG_EXPTYPES = [
     # compat: autogptq <=0.7.1 is_marlin_format: bool
     # Model Serialized in Exllama Format.
     (
-        os.path.join(models_path_prefix, "TheBloke/Llama-2-7B-Chat-GPTQ"),
+        "TheBloke/Llama-2-7B-Chat-GPTQ",
         None,
         "gptq_marlin" if current_platform.is_cuda() else "gptq",
     ),
     (
-        os.path.join(models_path_prefix, "TheBloke/Llama-2-7B-Chat-GPTQ"),
+        "TheBloke/Llama-2-7B-Chat-GPTQ",
         "marlin",
         "gptq_marlin" if current_platform.is_cuda() else "ERROR",
     ),
-    (os.path.join(models_path_prefix, "TheBloke/Llama-2-7B-Chat-GPTQ"), "gptq", "gptq"),
-    (os.path.join(models_path_prefix, "TheBloke/Llama-2-7B-Chat-GPTQ"), "awq", "ERROR"),
+    ("TheBloke/Llama-2-7B-Chat-GPTQ", "gptq", "gptq"),
+    ("TheBloke/Llama-2-7B-Chat-GPTQ", "awq", "ERROR"),
     # compat: autogptq >=0.8.0 use checkpoint_format: str
-
     # Model Serialized in Exllama Format.
     (
-        os.path.join(models_path_prefix, "LnL-AI/TinyLlama-1.1B-Chat-v1.0-GPTQ-4bit"),
+        "LnL-AI/TinyLlama-1.1B-Chat-v1.0-GPTQ-4bit",
         None,
         "gptq_marlin" if current_platform.is_cuda() else "gptq",
     ),
     (
-        os.path.join(models_path_prefix, "LnL-AI/TinyLlama-1.1B-Chat-v1.0-GPTQ-4bit"),
+        "LnL-AI/TinyLlama-1.1B-Chat-v1.0-GPTQ-4bit",
         "marlin",
         "gptq_marlin" if current_platform.is_cuda() else "ERROR",
     ),
-    (os.path.join(models_path_prefix, "LnL-AI/TinyLlama-1.1B-Chat-v1.0-GPTQ-4bit"), "gptq", "gptq"),
-    (os.path.join(models_path_prefix, "LnL-AI/TinyLlama-1.1B-Chat-v1.0-GPTQ-4bit"), "awq", "ERROR"),
+    ("LnL-AI/TinyLlama-1.1B-Chat-v1.0-GPTQ-4bit", "gptq", "gptq"),
+    ("LnL-AI/TinyLlama-1.1B-Chat-v1.0-GPTQ-4bit", "awq", "ERROR"),
     # AUTOAWQ
     (
-        os.path.join(models_path_prefix, "TheBloke/OpenHermes-2.5-Mistral-7B-AWQ"),
+        "TheBloke/OpenHermes-2.5-Mistral-7B-AWQ",
         None,
         "awq_marlin" if current_platform.is_cuda() else "awq",
     ),
-    (os.path.join(models_path_prefix, "TheBloke/OpenHermes-2.5-Mistral-7B-AWQ"), "awq", "awq"),
+    ("TheBloke/OpenHermes-2.5-Mistral-7B-AWQ", "awq", "awq"),
     (
-        os.path.join(models_path_prefix, "TheBloke/OpenHermes-2.5-Mistral-7B-AWQ"),
+        "TheBloke/OpenHermes-2.5-Mistral-7B-AWQ",
         "marlin",
         "awq_marlin" if current_platform.is_cuda() else "ERROR",
     ),
-    (os.path.join(models_path_prefix, "TheBloke/OpenHermes-2.5-Mistral-7B-AWQ"), "gptq", "ERROR"),
+    ("TheBloke/OpenHermes-2.5-Mistral-7B-AWQ", "gptq", "ERROR"),
 ]
 
 

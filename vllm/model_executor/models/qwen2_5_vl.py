@@ -42,14 +42,16 @@ from transformers.models.qwen2_5_vl.configuration_qwen2_5_vl import (
     Qwen2_5_VLVisionConfig,
 )
 
-from vllm.compilation.decorators import support_torch_compile
+from vllm.compilation.decorators import (
+    should_torch_compile_mm_encoder,
+    support_torch_compile,
+)
 from vllm.config import VllmConfig
 from vllm.distributed import parallel_state
 from vllm.distributed import utils as dist_utils
-from vllm.forward_context import set_forward_context
 from vllm.logger import init_logger
 from vllm.model_executor.layers.activation import get_act_and_mul_fn
-from vllm.model_executor.layers.attention.mm_encoder_attention import MMEncoderAttention
+from vllm.model_executor.layers.attention import MMEncoderAttention
 from vllm.model_executor.layers.conv import Conv3dLayer
 from vllm.model_executor.layers.layernorm import RMSNorm
 from vllm.model_executor.layers.linear import (
@@ -65,7 +67,6 @@ from vllm.model_executor.layers.rotary_embedding.common import (
 )
 from vllm.model_executor.model_loader.weight_utils import default_weight_loader
 from vllm.model_executor.models.module_mapping import MultiModelKeys
-from vllm.model_executor.models.vision import should_torch_compile_mm_vit
 from vllm.multimodal import MULTIMODAL_REGISTRY
 from vllm.multimodal.evs import (
     compute_mrope_for_media,
@@ -87,6 +88,7 @@ from vllm.v1.attention.backends.registry import AttentionBackendEnum
 
 from .interfaces import (
     MultiModalEmbeddings,
+    SupportsEagle,
     SupportsEagle3,
     SupportsLoRA,
     SupportsMRoPE,
@@ -112,12 +114,6 @@ from .vision import (
     is_vit_use_data_parallel,
     run_dp_sharded_mrope_vision_model,
 )
-
-import os
-import re
-from vllm import _custom_ops as ops
-from vllm.model_executor.utils import pad_weight, gemm_bank_conf
-from vllm.platforms import current_platform
 
 logger = init_logger(__name__)
 
@@ -201,6 +197,8 @@ class Qwen2_5_VLVideoPixelInputs(TensorSchema):
         - second_per_grid_ts: The video time interval (in seconds) for each
           grid along the temporal dimension in the 3D position IDs. Returned
           when `videos` is not `None`.
+        - timestamps: List of timestamp values (in seconds) for each frame
+          after merging. Length equals the temporal dimension after merging.
     """
 
     type: Literal["pixel_values_videos"]
@@ -220,6 +218,8 @@ class Qwen2_5_VLVideoPixelInputs(TensorSchema):
         TensorShape("nv"),
     ]
 
+    timestamps: list[list[float]] | None = None
+
 
 class Qwen2_5_VLVideoEmbeddingInputs(TensorSchema):
     """
@@ -238,6 +238,8 @@ class Qwen2_5_VLVideoEmbeddingInputs(TensorSchema):
         - second_per_grid_ts: The video time interval (in seconds) for each
           grid along the temporal dimension in the 3D position IDs. Returned
           when `videos` is not `None`.
+        - timestamps: List of timestamp values (in seconds) for each frame
+          after merging. Length equals the temporal dimension after merging.
     """
 
     type: Literal["video_embeds"]
@@ -256,6 +258,7 @@ class Qwen2_5_VLVideoEmbeddingInputs(TensorSchema):
         torch.Tensor | None,
         TensorShape("nv"),
     ] = None
+    timestamps: list[list[float]] | None = None
 
 
 Qwen2_5_VLVideoInputs: TypeAlias = (
@@ -351,6 +354,7 @@ class Qwen2_5_VisionAttention(nn.Module):
             num_heads=self.num_attention_heads_per_partition,
             head_size=self.hidden_size_per_attention_head,
             scale=self.hidden_size_per_attention_head**-0.5,
+            prefix=f"{prefix}.attn",
         )
 
         self.apply_rotary_emb = ApplyRotaryEmb(enforce_enable=True)
@@ -362,6 +366,7 @@ class Qwen2_5_VisionAttention(nn.Module):
         rotary_pos_emb_cos: torch.Tensor,
         rotary_pos_emb_sin: torch.Tensor,
         max_seqlen: torch.Tensor,  # Only used for Flash Attention
+        sequence_lengths: torch.Tensor,  # Only used for FlashInfer CuDNN backend
     ) -> torch.Tensor:
         # [s, b, c] --> [s, b, head * 3 * head_dim]
         x, _ = self.qkv(x)
@@ -403,6 +408,7 @@ class Qwen2_5_VisionAttention(nn.Module):
             value=v,
             cu_seqlens=cu_seqlens,
             max_seqlen=max_seqlen,
+            sequence_lengths=sequence_lengths,
         )
 
         context_layer = einops.rearrange(
@@ -420,7 +426,7 @@ class Qwen2_5_VisionAttention(nn.Module):
         "rotary_pos_emb_cos": 0,
         "rotary_pos_emb_sin": 0,
     },
-    enable_if=should_torch_compile_mm_vit,
+    enable_if=should_torch_compile_mm_encoder,
 )
 class Qwen2_5_VisionBlock(nn.Module):
     def __init__(
@@ -468,6 +474,7 @@ class Qwen2_5_VisionBlock(nn.Module):
             rotary_pos_emb_cos=rotary_pos_emb_cos,
             rotary_pos_emb_sin=rotary_pos_emb_sin,
             max_seqlen=max_seqlen,
+            sequence_lengths=None,
         )
         x_fused_norm, residual = self.norm2(x, residual=x_attn)
         x = residual + self.mlp(x_fused_norm)
@@ -478,7 +485,7 @@ class Qwen2_5_VisionBlock(nn.Module):
     dynamic_arg_dims={
         "x": 0,
     },
-    enable_if=should_torch_compile_mm_vit,
+    enable_if=should_torch_compile_mm_encoder,
 )
 class Qwen2_5_VisionPatchEmbed(nn.Module):
     def __init__(
@@ -505,8 +512,6 @@ class Qwen2_5_VisionPatchEmbed(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         L, C = x.shape
         x = x.view(L, -1, self.temporal_patch_size, self.patch_size, self.patch_size)
-        if os.environ.get('PYTORCH_MIOPEN_SUGGEST_NDHWC') == '1':
-            x = x.to(memory_format=torch.channels_last_3d)
         x = self.proj(x).view(L, self.hidden_size)
         return x
 
@@ -515,7 +520,7 @@ class Qwen2_5_VisionPatchEmbed(nn.Module):
     dynamic_arg_dims={
         "x": 0,
     },
-    enable_if=should_torch_compile_mm_vit,
+    enable_if=should_torch_compile_mm_encoder,
 )
 class Qwen2_5_VisionPatchMerger(nn.Module):
     def __init__(
@@ -614,15 +619,6 @@ class Qwen2_5_VisionTransformer(nn.Module):
             dtype=torch.get_default_dtype(),
         )
 
-        if self.attn_backend not in {
-            AttentionBackendEnum.FLASH_ATTN,
-            AttentionBackendEnum.TORCH_SDPA,
-            AttentionBackendEnum.ROCM_AITER_FA,
-        }:
-            raise RuntimeError(
-                f"Qwen2.5-VL does not support {self.attn_backend} backend now."
-            )
-
         with set_model_tag("Qwen2_5_VisionBlock", is_encoder=True):
             self.blocks = nn.ModuleList(
                 [
@@ -648,16 +644,6 @@ class Qwen2_5_VisionTransformer(nn.Module):
                 quant_config=quant_config,
                 prefix=f"{prefix}.merger",
             )
-            
-        self.quant_method = None
-        if quant_config is not None:
-            self.quant_method=quant_config.get_name()
-            self.quant_config=quant_config
-               
-        self.use_llama_nn = os.environ.get('LLAMA_NN') == '1'
-        self.use_gemm_pad = os.environ.get('GEMM_PAD') == '1'
-        self.use_fa_pad = os.environ.get('FA_PAD') == '1'
-        self.use_awq_pad = os.environ.get('AWQ_PAD') == '1'
 
     @property
     def dtype(self) -> torch.dtype:
@@ -778,6 +764,7 @@ class Qwen2_5_VisionTransformer(nn.Module):
         if self.attn_backend in {
             AttentionBackendEnum.FLASH_ATTN,
             AttentionBackendEnum.ROCM_AITER_FA,
+            AttentionBackendEnum.TRITON_ATTN,
         }:
             max_seqlen = (cu_seqlens[1:] - cu_seqlens[:-1]).max()
         return max_seqlen
@@ -921,49 +908,6 @@ class Qwen2_5_VisionTransformer(nn.Module):
                 weight_loader = getattr(param, "weight_loader", default_weight_loader)
                 weight_loader(param, loaded_weight)
             loaded_params.add(name)
-            
-        if self.use_llama_nn and self.quant_method is None:
-            lay_key_words = [
-                "attn.qkv.weight",
-                "attn.proj.weight",
-                "mlp.0.weight",
-                "mlp.2.weight",
-                "self_attn.qkv_proj.weight",
-                "self_attn.o_proj.weight",
-                "mlp.gate_up_proj.weight",
-                "mlp.down_proj.weight",
-                "lm_head.weight",
-            ]
-            combined_words = "|".join(lay_key_words)
-            
-            # lay_qkv_words = ["attn.qkv.weight"]   
-            # qkv_words = "|".join(lay_qkv_words)  
-            
-            # lay_qkv_bias_words = ["attn.qkv.bias"]   
-            # qkv_bias_words = "|".join(lay_qkv_bias_words) 
-            
-            for layername in loaded_params:
-                weight = params_dict[layername]
-                # if self.use_fa_pad and (re.findall(qkv_bias_words, layername)):
-                #     weight.data = pad_weight(weight.data, 32)
-                    
-                matches = re.findall(combined_words, layername)
-                if matches:   
-                    # if self.use_gemm_pad and gemm_bank_conf(weight.data.shape[0]):
-                    #     weight.data = pad_weight(weight.data, 32)  
-                    
-                    # if self.use_fa_pad and (re.findall(qkv_words, layername)):
-                    #     if not gemm_bank_conf(weight.data.shape[0]):
-                    #         weight.data = pad_weight(weight.data, 32)
-                        
-                    _weight = torch.zeros_like(weight.data)
-                    ori_shape =_weight.shape
-                    
-                    ops.trans_w16_gemm(_weight, weight.data, _weight.shape[0], _weight.shape[1])
-                    weight.data.copy_(_weight)
-                    
-                    weight.data=weight.data.reshape(ori_shape[1],-1)
-                    
         return loaded_params
 
 
@@ -1056,6 +1000,7 @@ class Qwen2_5_VLForConditionalGeneration(
     SupportsLoRA,
     SupportsPP,
     SupportsQuant,
+    SupportsEagle,
     SupportsEagle3,
     SupportsMultiModalPruning,
     SupportsMRoPE,
@@ -1199,13 +1144,6 @@ class Qwen2_5_VLForConditionalGeneration(
             self.language_model.make_empty_intermediate_tensors
         )
 
-    def set_aux_hidden_state_layers(self, layers: tuple[int, ...]) -> None:
-        self.language_model.model.aux_hidden_state_layers = layers
-
-    def get_eagle3_aux_hidden_state_layers(self) -> tuple[int, ...]:
-        num_layers = len(self.language_model.model.layers)
-        return (2, num_layers // 2, num_layers - 3)
-
     def _parse_and_validate_image_input(
         self, **kwargs: object
     ) -> Qwen2_5_VLImageInputs | None:
@@ -1268,13 +1206,12 @@ class Qwen2_5_VLForConditionalGeneration(
             image_embeds = image_input["image_embeds"].type(self.visual.dtype)
         else:
             pixel_values = image_input["pixel_values"]
-            with set_forward_context(None, self.vllm_config):
-                if self.use_data_parallel:
-                    return run_dp_sharded_mrope_vision_model(
-                        self.visual, pixel_values, grid_thw_list, rope_type="rope_3d"
-                    )
-                else:
-                    image_embeds = self.visual(pixel_values, grid_thw=grid_thw_list)
+            if self.use_data_parallel:
+                return run_dp_sharded_mrope_vision_model(
+                    self.visual, pixel_values, grid_thw_list, rope_type="rope_3d"
+                )
+            else:
+                image_embeds = self.visual(pixel_values, grid_thw=grid_thw_list)
 
         # Split concatenated embeddings for each image item.
         merge_size = self.visual.spatial_merge_size
@@ -1323,18 +1260,15 @@ class Qwen2_5_VLForConditionalGeneration(
             video_embeds = video_input["video_embeds"].type(self.visual.dtype)
         else:
             pixel_values_videos = video_input["pixel_values_videos"]
-            with set_forward_context(None, self.vllm_config):
-                if self.use_data_parallel:
-                    return run_dp_sharded_mrope_vision_model(
-                        self.visual,
-                        pixel_values_videos,
-                        grid_thw_list,
-                        rope_type="rope_3d",
-                    )
-                else:
-                    video_embeds = self.visual(
-                        pixel_values_videos, grid_thw=grid_thw_list
-                    )
+            if self.use_data_parallel:
+                return run_dp_sharded_mrope_vision_model(
+                    self.visual,
+                    pixel_values_videos,
+                    grid_thw_list,
+                    rope_type="rope_3d",
+                )
+            else:
+                video_embeds = self.visual(pixel_values_videos, grid_thw=grid_thw_list)
 
         # Split concatenated embeddings for each video item.
         merge_size = self.visual.spatial_merge_size

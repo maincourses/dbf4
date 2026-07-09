@@ -4,7 +4,6 @@
 import itertools
 from functools import partial
 
-import os
 import pytest
 from PIL import Image
 from pqdm.threads import pqdm
@@ -14,7 +13,6 @@ from vllm.multimodal.parse import ImageSize
 from vllm.multimodal.processing import BaseMultiModalProcessor
 
 from ...utils import build_model_context
-from ....utils import models_path_prefix
 
 
 def _validate_image_max_tokens_one(
@@ -37,7 +35,7 @@ def _validate_image_max_tokens_one(
 @pytest.mark.skip(
     "This test takes around 5 minutes to run. Comment this out to run it manually."
 )
-@pytest.mark.parametrize("model_id", [os.path.join(models_path_prefix, "llava-hf/llava-onevision-qwen2-0.5b-ov-hf")])
+@pytest.mark.parametrize("model_id", ["llava-hf/llava-onevision-qwen2-0.5b-ov-hf"])
 def test_processor_max_tokens(model_id):
     ctx = build_model_context(
         model_id,
@@ -89,7 +87,11 @@ def _validate_image_prompt_replacements_one(
     try:
         # The processor will throw an error if there is a mismatch
         # in the prompt replacements
-        processed_inputs = processor.apply(prompt, mm_data, {})
+        processed_inputs = processor(
+            prompt,
+            mm_items=processor.info.parse_mm_data(mm_data),
+            hf_processor_mm_kwargs={},
+        )
 
         image_placeholders = processed_inputs["mm_placeholders"]["image"]
         assert len(image_placeholders) == num_imgs
@@ -132,7 +134,7 @@ def _test_image_prompt_replacements(
         raise AssertionError(msg)
 
 
-@pytest.mark.parametrize("model_id", [os.path.join(models_path_prefix, "llava-hf/llava-onevision-qwen2-0.5b-ov-hf")])
+@pytest.mark.parametrize("model_id", ["llava-hf/llava-onevision-qwen2-0.5b-ov-hf"])
 @pytest.mark.parametrize("num_imgs", [1, 2])
 def test_processor_prompt_replacements_regression(model_id, num_imgs):
     ctx = build_model_context(

@@ -2,7 +2,6 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
 
-import os
 import pytest
 import torch
 
@@ -10,7 +9,6 @@ from vllm.multimodal.image import rescale_image_size
 
 from ...conftest import IMAGE_ASSETS, ImageTestAssets, VllmRunner
 from ..utils import check_logprobs_close
-from ...utils import models_path_prefix
 
 HF_IMAGE_PROMPTS = IMAGE_ASSETS.prompts(
     {
@@ -97,13 +95,11 @@ def run_awq_test(
 
 @pytest.mark.parametrize(
     ("source_model", "quant_model"),
-    [(os.path.join(models_path_prefix, "OpenGVLab/InternVL2-2B"), os.path.join(models_path_prefix, "OpenGVLab/InternVL2-2B-AWQ"))],
+    [("OpenGVLab/InternVL2-2B", "OpenGVLab/InternVL2-2B-AWQ")],
 )
 @pytest.mark.parametrize(
     "size_factors",
     [
-        # No image
-        [],
         # Single-scale
         [1.0],
         # Single-scale, batched

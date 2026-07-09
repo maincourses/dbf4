@@ -20,7 +20,7 @@ from vllm.logger import init_logger
 from vllm.transformers_utils.config import get_config
 
 from ..models.registry import HF_EXAMPLE_MODELS
-from ..utils import compare_two_settings, create_new_process_for_each_test, models_path_prefix
+from ..utils import compare_two_settings, create_new_process_for_each_test
 
 logger = init_logger("test_pipeline_parallel")
 
@@ -104,61 +104,61 @@ TEXT_GENERATION_MODELS = {
     # [Decoder-only]
     # Uses Llama
     # "BAAI/AquilaChat-7B": PPTestSettings.fast(),
-    os.path.join(models_path_prefix, "Snowflake/snowflake-arctic-instruct"): PPTestSettings.fast(load_format="dummy"),
-    os.path.join(models_path_prefix, "baichuan-inc/Baichuan-7B"): PPTestSettings.fast(),
-    os.path.join(models_path_prefix, "baichuan-inc/Baichuan2-13B-Chat"): PPTestSettings.fast(),
-    os.path.join(models_path_prefix, "bigscience/bloomz-1b1"): PPTestSettings.fast(),
-    os.path.join(models_path_prefix, "zai-org/chatglm3-6b"): PPTestSettings.fast(),
-    os.path.join(models_path_prefix, "CohereLabs/c4ai-command-r-v01"): PPTestSettings.fast(load_format="dummy"),
-    os.path.join(models_path_prefix, "databricks/dbrx-instruct"): PPTestSettings.fast(load_format="dummy"),
-    os.path.join(models_path_prefix, "Deci/DeciLM-7B-instruct"): PPTestSettings.fast(),
-    os.path.join(models_path_prefix, "deepseek-ai/deepseek-llm-7b-chat"): PPTestSettings.fast(),
-    os.path.join(models_path_prefix, "deepseek-ai/DeepSeek-V2-Lite-Chat"): PPTestSettings.fast(tp_base=2),
-    os.path.join(models_path_prefix, "LGAI-EXAONE/EXAONE-3.0-7.8B-Instruct"): PPTestSettings.fast(),
-    os.path.join(models_path_prefix, "tiiuae/falcon-7b"): PPTestSettings.fast(),
-    os.path.join(models_path_prefix, "google/gemma-1.1-2b-it"): PPTestSettings.fast(),
-    os.path.join(models_path_prefix, "google/gemma-2-9b"): PPTestSettings.fast(),
-    os.path.join(models_path_prefix, "gpt2"): PPTestSettings.fast(),
-    os.path.join(models_path_prefix, "bigcode/starcoder"): PPTestSettings.fast(),
-    os.path.join(models_path_prefix, "EleutherAI/gpt-j-6b"): PPTestSettings.fast(),
-    os.path.join(models_path_prefix, "EleutherAI/pythia-1.4b"): PPTestSettings.fast(),
-    os.path.join(models_path_prefix, "ibm/PowerLM-3b"): PPTestSettings.fast(),
-    os.path.join(models_path_prefix, "ibm/PowerMoE-3b"): PPTestSettings.fast(),
+    "Snowflake/snowflake-arctic-instruct": PPTestSettings.fast(load_format="dummy"),
+    "baichuan-inc/Baichuan-7B": PPTestSettings.fast(),
+    "baichuan-inc/Baichuan2-13B-Chat": PPTestSettings.fast(),
+    "bigscience/bloomz-1b1": PPTestSettings.fast(),
+    "zai-org/chatglm3-6b": PPTestSettings.fast(),
+    "CohereLabs/c4ai-command-r-v01": PPTestSettings.fast(load_format="dummy"),
+    "databricks/dbrx-instruct": PPTestSettings.fast(load_format="dummy"),
+    "Deci/DeciLM-7B-instruct": PPTestSettings.fast(),
+    "deepseek-ai/deepseek-llm-7b-chat": PPTestSettings.fast(),
+    "deepseek-ai/DeepSeek-V2-Lite-Chat": PPTestSettings.fast(tp_base=2),
+    "LGAI-EXAONE/EXAONE-3.0-7.8B-Instruct": PPTestSettings.fast(),
+    "tiiuae/falcon-7b": PPTestSettings.fast(),
+    "google/gemma-1.1-2b-it": PPTestSettings.fast(),
+    "google/gemma-2-9b": PPTestSettings.fast(),
+    "gpt2": PPTestSettings.fast(),
+    "bigcode/starcoder": PPTestSettings.fast(),
+    "EleutherAI/gpt-j-6b": PPTestSettings.fast(),
+    "EleutherAI/pythia-1.4b": PPTestSettings.fast(),
+    "ibm/PowerLM-3b": PPTestSettings.fast(),
+    "ibm/PowerMoE-3b": PPTestSettings.fast(),
     # Uses Llama
     # "internlm/internlm-chat-7b": PPTestSettings.fast(),
-    os.path.join(models_path_prefix, "internlm/internlm2-chat-7b"): PPTestSettings.fast(),
-    os.path.join(models_path_prefix, "inceptionai/jais-13b-chat"): PPTestSettings.fast(),
-    os.path.join(models_path_prefix, "ai21labs/Jamba-tiny-dev"): PPTestSettings.fast(),
-    os.path.join(models_path_prefix, "pfnet/plamo-2-1b"): PPTestSettings.fast(),
-    os.path.join(models_path_prefix, "pfnet/plamo-3-nict-2b-base"): PPTestSettings.fast(),
-    os.path.join(models_path_prefix, "meta-llama/Llama-3.2-1B-Instruct"): PPTestSettings.detailed(),
+    "internlm/internlm2-chat-7b": PPTestSettings.fast(),
+    "inceptionai/jais-13b-chat": PPTestSettings.fast(),
+    "ai21labs/Jamba-tiny-dev": PPTestSettings.fast(),
+    "pfnet/plamo-2-1b": PPTestSettings.fast(),
+    "pfnet/plamo-3-nict-2b-base": PPTestSettings.fast(),
+    "meta-llama/Llama-3.2-1B-Instruct": PPTestSettings.detailed(),
     # Tests TransformersForCausalLM
-    os.path.join(models_path_prefix, "hmellor/Ilama-3.2-1B"): PPTestSettings.fast(),
-    os.path.join(models_path_prefix, "openbmb/MiniCPM-2B-sft-bf16"): PPTestSettings.fast(),
-    os.path.join(models_path_prefix, "openbmb/MiniCPM3-4B"): PPTestSettings.fast(),
+    "hmellor/Ilama-3.2-1B": PPTestSettings.fast(),
+    "openbmb/MiniCPM-2B-sft-bf16": PPTestSettings.fast(),
+    "openbmb/MiniCPM3-4B": PPTestSettings.fast(),
     # Uses Llama
     # "mistralai/Mistral-7B-Instruct-v0.1": PPTestSettings.fast(),
-    os.path.join(models_path_prefix, "state-spaces/mamba-130m-hf"): PPTestSettings.fast(),
-    os.path.join(models_path_prefix, "mistralai/Mixtral-8x7B-Instruct-v0.1"): PPTestSettings.fast(load_format="dummy"),
-    os.path.join(models_path_prefix, "mosaicml/mpt-7b"): PPTestSettings.fast(),
-    os.path.join(models_path_prefix, "nvidia/Minitron-8B-Base"): PPTestSettings.fast(),
-    os.path.join(models_path_prefix, "allenai/OLMo-1B-hf"): PPTestSettings.fast(),
-    os.path.join(models_path_prefix, "allenai/OLMo-2-0425-1B"): PPTestSettings.fast(),
-    os.path.join(models_path_prefix, "allenai/OLMoE-1B-7B-0924-Instruct"): PPTestSettings.fast(),
-    os.path.join(models_path_prefix, "facebook/opt-iml-max-1.3b"): PPTestSettings.fast(),
-    os.path.join(models_path_prefix, "OrionStarAI/Orion-14B-Chat"): PPTestSettings.fast(),
-    os.path.join(models_path_prefix, "adept/persimmon-8b-chat"): PPTestSettings.fast(),
-    os.path.join(models_path_prefix, "microsoft/phi-2"): PPTestSettings.fast(),
-    os.path.join(models_path_prefix, "microsoft/Phi-3-small-8k-instruct"): PPTestSettings.fast(),
-    os.path.join(models_path_prefix, "microsoft/Phi-3.5-MoE-instruct"): PPTestSettings.detailed(
+    "state-spaces/mamba-130m-hf": PPTestSettings.fast(),
+    "mistralai/Mixtral-8x7B-Instruct-v0.1": PPTestSettings.fast(load_format="dummy"),
+    "mosaicml/mpt-7b": PPTestSettings.fast(),
+    "nvidia/Minitron-8B-Base": PPTestSettings.fast(),
+    "allenai/OLMo-1B-hf": PPTestSettings.fast(),
+    "allenai/OLMo-2-0425-1B": PPTestSettings.fast(),
+    "allenai/OLMoE-1B-7B-0924-Instruct": PPTestSettings.fast(),
+    "facebook/opt-iml-max-1.3b": PPTestSettings.fast(),
+    "OrionStarAI/Orion-14B-Chat": PPTestSettings.fast(),
+    "adept/persimmon-8b-chat": PPTestSettings.fast(),
+    "microsoft/phi-2": PPTestSettings.fast(),
+    "microsoft/Phi-3-small-8k-instruct": PPTestSettings.fast(),
+    "microsoft/Phi-3.5-MoE-instruct": PPTestSettings.detailed(
         multi_node_only=True, load_format="dummy"
     ),
-    os.path.join(models_path_prefix, "Qwen/Qwen-7B-Chat"): PPTestSettings.fast(),
-    os.path.join(models_path_prefix, "Qwen/Qwen2.5-0.5B-Instruct"): PPTestSettings.fast(),
-    os.path.join(models_path_prefix, "Qwen/Qwen1.5-MoE-A2.7B-Chat"): PPTestSettings.fast(),
-    os.path.join(models_path_prefix, "stabilityai/stablelm-3b-4e1t"): PPTestSettings.fast(),
-    os.path.join(models_path_prefix, "bigcode/starcoder2-3b"): PPTestSettings.fast(),
-    os.path.join(models_path_prefix, "upstage/solar-pro-preview-instruct"): PPTestSettings.fast(load_format="dummy"),
+    "Qwen/Qwen-7B-Chat": PPTestSettings.fast(),
+    "Qwen/Qwen2.5-0.5B-Instruct": PPTestSettings.fast(),
+    "Qwen/Qwen1.5-MoE-A2.7B-Chat": PPTestSettings.fast(),
+    "stabilityai/stablelm-3b-4e1t": PPTestSettings.fast(),
+    "bigcode/starcoder2-3b": PPTestSettings.fast(),
+    "upstage/solar-pro-preview-instruct": PPTestSettings.fast(load_format="dummy"),
     # FIXME: Cannot load tokenizer in latest transformers version.
     # Need to use tokenizer from `meta-llama/Llama-2-7b-chat-hf`
     # "xverse/XVERSE-7B-Chat": PPTestSettings.fast(),
@@ -169,53 +169,53 @@ TEXT_GENERATION_MODELS = {
 
 EMBEDDING_MODELS = {  # type: ignore[var-annotated]
     # [Text-only]
-    os.path.join(models_path_prefix, "intfloat/e5-mistral-7b-instruct"): PPTestSettings.fast(runner="pooling"),
-    os.path.join(models_path_prefix, "BAAI/bge-multilingual-gemma2"): PPTestSettings.fast(runner="pooling"),
-    os.path.join(models_path_prefix, "Qwen/Qwen2.5-Math-RM-72B"): PPTestSettings.fast(
+    "intfloat/e5-mistral-7b-instruct": PPTestSettings.fast(runner="pooling"),
+    "BAAI/bge-multilingual-gemma2": PPTestSettings.fast(runner="pooling"),
+    "Qwen/Qwen2.5-Math-RM-72B": PPTestSettings.fast(
         load_format="dummy", runner="pooling"
     ),
 }
 
 MULTIMODAL_MODELS = {
     # [Decoder-only]
-    os.path.join(models_path_prefix, "Salesforce/blip2-opt-6.7b"): PPTestSettings.fast(),
-    os.path.join(models_path_prefix, "facebook/chameleon-7b"): PPTestSettings.fast(),
-    os.path.join(models_path_prefix, "adept/fuyu-8b"): PPTestSettings.fast(),
-    os.path.join(models_path_prefix, "zai-org/glm-4v-9b"): PPTestSettings.fast(),
-    os.path.join(models_path_prefix, "OpenGVLab/InternVL2-1B"): PPTestSettings.fast(),
-    os.path.join(models_path_prefix, "llava-hf/llava-1.5-7b-hf"): PPTestSettings.fast(),
-    os.path.join(models_path_prefix, "llava-hf/llava-v1.6-mistral-7b-hf"): PPTestSettings.fast(),
-    os.path.join(models_path_prefix, "llava-hf/LLaVA-NeXT-Video-7B-hf"): PPTestSettings.fast(),
-    os.path.join(models_path_prefix, "llava-hf/llava-onevision-qwen2-0.5b-ov-hf"): PPTestSettings.fast(),
-    os.path.join(models_path_prefix, "openbmb/MiniCPM-Llama3-V-2_5"): PPTestSettings.fast(),
-    os.path.join(models_path_prefix, "allenai/Molmo-7B-D-0924"): PPTestSettings.fast(),
-    os.path.join(models_path_prefix, "AIDC-AI/Ovis2-1B"): PPTestSettings.fast(),
-    os.path.join(models_path_prefix, "AIDC-AI/Ovis2.5-2B"): PPTestSettings.fast(),
-    os.path.join(models_path_prefix, "microsoft/Phi-3.5-vision-instruct"): PPTestSettings.fast(),
-    os.path.join(models_path_prefix, "mistralai/Pixtral-12B-2409"): PPTestSettings.fast(load_format="dummy"),
-    os.path.join(models_path_prefix, "Qwen/Qwen-VL-Chat"): PPTestSettings.fast(),
-    os.path.join(models_path_prefix, "Qwen/Qwen2-Audio-7B-Instruct"): PPTestSettings.fast(),
-    os.path.join(models_path_prefix, "Qwen/Qwen2-VL-2B-Instruct"): PPTestSettings.fast(),
-    os.path.join(models_path_prefix, "fixie-ai/ultravox-v0_5-llama-3_2-1b"): PPTestSettings.fast(),
+    "Salesforce/blip2-opt-6.7b": PPTestSettings.fast(),
+    "facebook/chameleon-7b": PPTestSettings.fast(),
+    "adept/fuyu-8b": PPTestSettings.fast(),
+    "zai-org/glm-4v-9b": PPTestSettings.fast(),
+    "OpenGVLab/InternVL2-1B": PPTestSettings.fast(),
+    "llava-hf/llava-1.5-7b-hf": PPTestSettings.fast(),
+    "llava-hf/llava-v1.6-mistral-7b-hf": PPTestSettings.fast(),
+    "llava-hf/LLaVA-NeXT-Video-7B-hf": PPTestSettings.fast(),
+    "llava-hf/llava-onevision-qwen2-0.5b-ov-hf": PPTestSettings.fast(),
+    "openbmb/MiniCPM-Llama3-V-2_5": PPTestSettings.fast(),
+    "allenai/Molmo-7B-D-0924": PPTestSettings.fast(),
+    "AIDC-AI/Ovis2-1B": PPTestSettings.fast(),
+    "AIDC-AI/Ovis2.5-2B": PPTestSettings.fast(),
+    "microsoft/Phi-3.5-vision-instruct": PPTestSettings.fast(),
+    "mistralai/Pixtral-12B-2409": PPTestSettings.fast(load_format="dummy"),
+    "Qwen/Qwen-VL-Chat": PPTestSettings.fast(),
+    "Qwen/Qwen2-Audio-7B-Instruct": PPTestSettings.fast(),
+    "Qwen/Qwen2-VL-2B-Instruct": PPTestSettings.fast(),
+    "fixie-ai/ultravox-v0_5-llama-3_2-1b": PPTestSettings.fast(),
 }
 
 # NOTE: You can update this on your local machine to run specific tests
 TEST_MODELS = [
     # [LANGUAGE GENERATION]
-    os.path.join(models_path_prefix, "microsoft/Phi-3.5-MoE-instruct"),
-    os.path.join(models_path_prefix, "meta-llama/Llama-3.2-1B-Instruct"),
-    os.path.join(models_path_prefix, "hmellor/Ilama-3.2-1B"),
-    os.path.join(models_path_prefix, "ibm/PowerLM-3b"),
-    os.path.join(models_path_prefix, "deepseek-ai/DeepSeek-V2-Lite-Chat"),
+    "microsoft/Phi-3.5-MoE-instruct",
+    "meta-llama/Llama-3.2-1B-Instruct",
+    "hmellor/Ilama-3.2-1B",
+    "ibm/PowerLM-3b",
+    "deepseek-ai/DeepSeek-V2-Lite-Chat",
     # [LANGUAGE EMBEDDING]
-    os.path.join(models_path_prefix, "intfloat/e5-mistral-7b-instruct"),
-    os.path.join(models_path_prefix, "BAAI/bge-multilingual-gemma2"),
+    "intfloat/e5-mistral-7b-instruct",
+    "BAAI/bge-multilingual-gemma2",
     # [MULTIMODAL GENERATION]
-    os.path.join(models_path_prefix, "OpenGVLab/InternVL2-1B"),
-    os.path.join(models_path_prefix, "microsoft/Phi-3.5-vision-instruct"),
-    os.path.join(models_path_prefix, "fixie-ai/ultravox-v0_5-llama-3_2-1b"),
+    "OpenGVLab/InternVL2-1B",
+    "microsoft/Phi-3.5-vision-instruct",
+    "fixie-ai/ultravox-v0_5-llama-3_2-1b",
     # [LANGUAGE GENERATION - HYBRID ARCH]
-    os.path.join(models_path_prefix, "ai21labs/Jamba-tiny-dev"),
+    "ai21labs/Jamba-tiny-dev",
 ]
 
 
@@ -247,6 +247,7 @@ def _compare_tp(
     hf_config = get_config(model_id, trust_remote_code)
     require_embed_inputs = model_info.require_embed_inputs
     max_num_seqs = model_info.max_num_seqs
+    enable_prefix_caching = model_info.enable_prefix_caching
 
     dtype = "float16"
     if hf_config.model_type in _FLOAT16_NOT_SUPPORTED_MODELS:
@@ -300,6 +301,8 @@ def _compare_tp(
         common_args.extend(["--load-format", load_format])
     if hf_overrides:
         common_args.extend(["--hf-overrides", json.dumps(hf_overrides)])
+    if not enable_prefix_caching:
+        common_args.append("--no-enable-prefix-caching")
     if require_embed_inputs:
         common_args.extend(
             [

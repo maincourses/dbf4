@@ -117,18 +117,13 @@ function (get_torch_gpu_compiler_flags OUT_GPU_FLAGS GPU_LANG)
       "import torch.utils.cpp_extension as t; print(';'.join(t.COMMON_HIP_FLAGS + t.COMMON_HIPCC_FLAGS))"
       "Failed to determine torch nvcc compiler flags")
 
-    list(REMOVE_ITEM GPU_FLAGS
-      "-DUSE_ROCM=1"
-    )
- 
     list(APPEND GPU_FLAGS
       "-DUSE_ROCM"
-      # "-DENABLE_FP8"
+      "-DENABLE_FP8"
       "-U__HIP_NO_HALF_CONVERSIONS__"
       "-U__HIP_NO_HALF_OPERATORS__"
       "-Werror=unused-variable"
-      "-fno-gpu-rdc"
-      "--gpu-max-threads-per-block=1024")
+      "-fno-gpu-rdc")
 
   endif()
   set(${OUT_GPU_FLAGS} ${GPU_FLAGS} PARENT_SCOPE)

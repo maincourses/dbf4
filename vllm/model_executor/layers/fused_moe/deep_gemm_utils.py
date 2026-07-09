@@ -13,8 +13,6 @@ from vllm.triton_utils import tl, triton
 from vllm.utils.deep_gemm import get_mk_alignment_for_contiguous_layout
 from vllm.utils.math_utils import round_up
 
-from lightop import op
-
 
 def expert_num_tokens_round_up_and_sum(
     expert_num_tokens: torch.Tensor, alignment: int
@@ -60,12 +58,6 @@ def round_up_128(x: int) -> int:
 
 
 @triton.jit
-def round_up_256(x: int) -> int:
-    y = 256
-    return ((x + y - 1) // y) * y
-
-
-@triton.jit
 def _fwd_kernel_ep_scatter_1(
     num_recv_tokens_per_expert,
     expert_start_loc,
@@ -82,27 +74,30 @@ def _fwd_kernel_ep_scatter_1(
         mask=offset_cumsum < num_experts,
         other=0,
     )
-    #tokens_per_expert = round_up_128(tokens_per_expert)
-    tokens_per_expert = round_up_256(tokens_per_expert)
+    tokens_per_expert = round_up_128(tokens_per_expert)
     cumsum = tl.cumsum(tokens_per_expert) - tokens_per_expert
 
-    #if cur_expert == 0:
-    tl.store(expert_start_loc + offset_cumsum, cumsum, mask=offset_cumsum < num_experts)
-
-    tl.debug_barrier()
-
-    #cur_expert_start = cumsum[cur_expert]
-    cur_expert_start = tl.load(expert_start_loc + cur_expert)
+    # Extract this block's offset from the register vector (warp shuffle,
+    # no global memory round-trip) then write it once to expert_start_loc.
+    cur_expert_start = tl.sum(
+        tl.where(offset_cumsum == cur_expert, cumsum, tl.zeros_like(cumsum))
+    )
+    tl.store(expert_start_loc + cur_expert, cur_expert_start)
     cur_expert_token_num = tl.load(num_recv_tokens_per_expert + cur_expert)
 
     m_indices_start_ptr = m_indices + cur_expert_start
     off_expert = tl.arange(0, BLOCK_E)
 
-    for start_m in tl.range(0, cur_expert_token_num, BLOCK_E, num_stages=4):
+    # any rows in the per-expert aligned region that do not correspond to
+    # real tokens are left untouched here and should remain initialized to
+    # -1 so DeepGEMM can skip them
+    for start_m in tl.range(0, cur_expert_token_num, BLOCK_E):
+        offs = start_m + off_expert
+        mask = offs < cur_expert_token_num
         tl.store(
-            m_indices_start_ptr + start_m + off_expert,
+            m_indices_start_ptr + offs,
             cur_expert,
-            mask=start_m + off_expert < cur_expert_token_num
+            mask=mask,
         )
 
 
@@ -142,32 +137,26 @@ def _fwd_kernel_ep_scatter_2(
     offset_in = tl.arange(0, HIDDEN_SIZE_PAD)
     mask = offset_in < HIDDEN_SIZE
 
-    index_in_s = tl.arange(0, SCALE_HIDDEN_SIZE_PAD)
-    mask_s = index_in_s < SCALE_HIDDEN_SIZE
+    offset_in_s = tl.arange(0, SCALE_HIDDEN_SIZE_PAD)
+    mask_s = offset_in_s < SCALE_HIDDEN_SIZE
 
-    for token_id_int32 in range(start_token_id, total_token_num, grid_num):
-        token_id = token_id_int32.to(tl.int64)
+    for token_id in range(start_token_id, total_token_num, grid_num):
         to_copy = tl.load(recv_x + token_id * recv_x_stride0 + offset_in, mask=mask)
         to_copy_s = tl.load(
-            recv_x_scale
-            + token_id * recv_x_scale_stride0
-            + index_in_s * recv_x_scale_stride1,
-            mask=mask_s,
+            recv_x_scale + token_id * recv_x_scale_stride0 + offset_in_s, mask=mask_s
         )
 
-        for topk_idx_int32 in tl.range(0, topk_num, 1, num_stages=4):
-            topk_index = topk_idx_int32.to(tl.int64)
+        for topk_index in tl.range(0, topk_num, 1, num_stages=4):
             expert_id = tl.load(recv_topk + token_id * recv_topk_stride0 + topk_index)
 
             if HAS_EXPERT_MAP:
                 expert_id = apply_expert_map(expert_id, expert_map)
-            if expert_id >= 0:
-                dest_token_index_int32 = tl.atomic_add(expert_start_loc + expert_id, 1)
-                dest_token_index = dest_token_index_int32.to(tl.int64)
 
+            if expert_id >= 0:
+                dest_token_index = tl.atomic_add(expert_start_loc + expert_id, 1)
                 tl.store(
                     output_index + token_id * output_index_stride0 + topk_index,
-                    dest_token_index_int32,
+                    dest_token_index,
                 )
                 output_tensor_ptr = (
                     output_tensor + dest_token_index * output_tensor_stride0
@@ -176,11 +165,7 @@ def _fwd_kernel_ep_scatter_2(
                     output_tensor_scale + dest_token_index * output_tensor_scale_stride0
                 )
                 tl.store(output_tensor_ptr + offset_in, to_copy, mask=mask)
-                tl.store(
-                    output_tensor_scale_ptr + index_in_s * output_tensor_scale_stride1,
-                    to_copy_s,
-                    mask=mask_s,
-                )
+                tl.store(output_tensor_scale_ptr + offset_in_s, to_copy_s, mask=mask_s)
 
 
 @torch.no_grad()
@@ -196,71 +181,59 @@ def ep_scatter(
     m_indices: torch.Tensor,
     output_index: torch.Tensor,
 ):
-    # BLOCK_E = 128  # token num of per expert is aligned to 128
-    # BLOCK_D = 128  # block size of quantization
-    BLOCK_E = 256  # token num of per expert is aligned to 256
+    BLOCK_E = 128  # token num of per expert is aligned to 128
+    BLOCK_D = 128  # block size of quantization
     num_warps = 8
     num_experts = num_recv_tokens_per_expert.shape[0]
     hidden_size = recv_x.shape[1]
-    scale_hidden_size = recv_x_scale.shape[-1]
     # grid = (triton.cdiv(hidden_size, BLOCK_D), num_experts)
     grid = num_experts
 
     assert m_indices.shape[0] % BLOCK_E == 0
+    assert expert_start_loc.shape[0] == num_experts
 
-    if hasattr(op, "ep_scatter"):
-        op.ep_scatter(
-            recv_x, recv_x_scale,
-            recv_topk, expert_map,
-            num_recv_tokens_per_expert, 
-            output_tensor, output_tensor_scale, m_indices, output_index,
-            num_experts, BLOCK_E
-        )
-    else:
-        _fwd_kernel_ep_scatter_1[(grid,)](
-            num_recv_tokens_per_expert,
-            expert_start_loc,
-            m_indices,
-            num_experts=num_experts,
-            num_warps=num_warps,
-            BLOCK_E=BLOCK_E,
-            BLOCK_EXPERT_NUM=triton.next_power_of_2(num_experts),
-        )
+    _fwd_kernel_ep_scatter_1[(grid,)](
+        num_recv_tokens_per_expert,
+        expert_start_loc,
+        m_indices,
+        num_experts=num_experts,
+        num_warps=num_warps,
+        BLOCK_E=BLOCK_E,
+        BLOCK_EXPERT_NUM=triton.next_power_of_2(num_experts),
+    )
 
-        grid = min(recv_topk.shape[0], 1024 * 8)
+    grid = min(recv_topk.shape[0], 1024 * 8)
 
-        _fwd_kernel_ep_scatter_2[(grid,)](
-            recv_topk.shape[0],
-            expert_start_loc,
-            recv_x,
-            recv_x.stride(0),
-            recv_x.stride(1),
-            recv_x_scale,
-            recv_x_scale.stride(0),
-            recv_x_scale.stride(1),
-            recv_topk,
-            recv_topk.stride(0),
-            recv_topk.stride(1),
-            output_tensor,
-            output_tensor.stride(0),
-            output_tensor.stride(1),
-            output_tensor_scale,
-            output_tensor_scale.stride(0),
-            output_tensor_scale.stride(1),
-            output_index,
-            output_index.stride(0),
-            output_index.stride(1),
-            topk_num=recv_topk.shape[1],
-            expert_map=expert_map,
-            HAS_EXPERT_MAP=expert_map is not None,
-            num_warps=num_warps,
-            HIDDEN_SIZE=hidden_size,
-            HIDDEN_SIZE_PAD=triton.next_power_of_2(hidden_size),
-            # SCALE_HIDDEN_SIZE=hidden_size // BLOCK_D,
-            # SCALE_HIDDEN_SIZE_PAD=triton.next_power_of_2(hidden_size // BLOCK_D),
-            SCALE_HIDDEN_SIZE=scale_hidden_size,
-            SCALE_HIDDEN_SIZE_PAD=triton.next_power_of_2(scale_hidden_size),
-        )
+    _fwd_kernel_ep_scatter_2[(grid,)](
+        recv_topk.shape[0],
+        expert_start_loc,
+        recv_x,
+        recv_x.stride(0),
+        recv_x.stride(1),
+        recv_x_scale,
+        recv_x_scale.stride(0),
+        recv_x_scale.stride(1),
+        recv_topk,
+        recv_topk.stride(0),
+        recv_topk.stride(1),
+        output_tensor,
+        output_tensor.stride(0),
+        output_tensor.stride(1),
+        output_tensor_scale,
+        output_tensor_scale.stride(0),
+        output_tensor_scale.stride(1),
+        output_index,
+        output_index.stride(0),
+        output_index.stride(1),
+        topk_num=recv_topk.shape[1],
+        expert_map=expert_map,
+        HAS_EXPERT_MAP=expert_map is not None,
+        num_warps=num_warps,
+        HIDDEN_SIZE=hidden_size,
+        HIDDEN_SIZE_PAD=triton.next_power_of_2(hidden_size),
+        SCALE_HIDDEN_SIZE=hidden_size // BLOCK_D,
+        SCALE_HIDDEN_SIZE_PAD=triton.next_power_of_2(hidden_size // BLOCK_D),
+    )
     return
 
 
@@ -287,34 +260,25 @@ def _fwd_kernel_ep_gather(
     HAS_EXPERT_MAP: tl.constexpr,
     BLOCK_D: tl.constexpr,
 ):
-    cur_block_int32 = tl.program_id(0)
-    cur_block = cur_block_int32.to(tl.int64)
-
-    start_cur_token_int32 = tl.program_id(1)
-
+    cur_block = tl.program_id(0)
+    start_cur_token = tl.program_id(1)
     grid_num = tl.num_programs(1)
 
-    for cur_token_int32 in range(start_cur_token_int32, total_token_num, grid_num):
-        cur_token = cur_token_int32.to(tl.int64)
-
+    for cur_token in range(start_cur_token, total_token_num, grid_num):
         off_d = tl.arange(0, BLOCK_D)
         accumulator = tl.zeros([BLOCK_D], dtype=tl.float32)
-
-        for topk_index_int32 in range(0, topk_num):
-            topk_index = topk_index_int32.to(tl.int64)
-
+        for topk_index in range(0, topk_num):
             expert_id = tl.load(
                 recv_topk_ids + cur_token * recv_topk_ids_stride0 + topk_index
             )
+
             if HAS_EXPERT_MAP:
                 expert_id = apply_expert_map(expert_id, expert_map)
 
             if expert_id >= 0:
-                source_token_index_int32 = tl.load(
+                source_token_index = tl.load(
                     input_index + cur_token * input_index_stride0 + topk_index
                 )
-                source_token_index = source_token_index_int32.to(tl.int64)
-
                 acc_weight = tl.load(
                     recv_topk_weight + cur_token * recv_topk_weight_stride0 + topk_index
                 )
@@ -391,8 +355,7 @@ def deepgemm_moe_permute(
     H = aq.size(1)
     device = aq.device
 
-    #block_m, block_k = get_mk_alignment_for_contiguous_layout()
-    block_m = 256
+    block_m, block_k = get_mk_alignment_for_contiguous_layout()
 
     M_sum = compute_aligned_M(
         M=topk_ids.size(0),
@@ -410,11 +373,8 @@ def deepgemm_moe_permute(
     if aq_out is None:
         aq_out = torch.empty((M_sum, H), device=device, dtype=aq.dtype)
 
-    # aq_scale_out = torch.empty(
-    #     (M_sum, H // block_k), device=device, dtype=torch.float32
-    # )
     aq_scale_out = torch.empty(
-        (M_sum, aq_scale.shape[-1]), device=device, dtype=torch.float32
+        (M_sum, H // block_k), device=device, dtype=torch.float32
     )
 
     # DeepGEMM uses negative values in m_indices (here expert_ids) to mark

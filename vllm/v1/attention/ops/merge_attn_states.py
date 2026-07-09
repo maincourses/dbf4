@@ -4,7 +4,6 @@
 import torch
 
 from vllm.platforms import current_platform
-from vllm import envs
 
 
 def merge_attn_states(
@@ -31,7 +30,7 @@ def merge_attn_states(
         return headdim % 8 == 0
 
     if (
-        current_platform.is_cuda() or envs.VLLM_USE_MERGE_ATTN_STATES_OPT
+        current_platform.is_cuda()
         and supported_dtypes(output)
         and supported_headdim(output)
     ):

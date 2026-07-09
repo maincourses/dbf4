@@ -3,13 +3,12 @@
 import dataclasses
 
 import pytest
-import os
 
 from vllm.config import CompilationMode
 from vllm.platforms import current_platform
 from vllm.utils.torch_utils import cuda_device_count_stateless
 
-from ...utils import compare_all_settings, models_path_prefix
+from ...utils import compare_all_settings
 
 ATTN_BACKEND = "FLASH_ATTN" if not current_platform.is_rocm() else "ROCM_ATTN"
 
@@ -31,7 +30,7 @@ class TestSetting:
     [
         # basic llama model
         TestSetting(
-            model=os.path.join(models_path_prefix, "meta-llama/Llama-3.2-1B-Instruct"),
+            model="meta-llama/Llama-3.2-1B-Instruct",
             model_args=["--max-model-len", "2048"],
             pp_size=2,
             tp_size=2,
@@ -40,7 +39,7 @@ class TestSetting:
         ),
         # llama model with quantization
         TestSetting(
-            model=os.path.join(models_path_prefix, "TheBloke/TinyLlama-1.1B-Chat-v0.3-GPTQ"),
+            model="TheBloke/TinyLlama-1.1B-Chat-v0.3-GPTQ",
             model_args=["--quantization", "gptq", "--max-model-len", "2048"],
             pp_size=1,
             tp_size=1,
@@ -49,7 +48,7 @@ class TestSetting:
         ),
         # MoE model
         TestSetting(
-            model=os.path.join(models_path_prefix, "ibm/PowerMoE-3b"),
+            model="ibm/PowerMoE-3b",
             model_args=["--max-model-len", "2048"],
             pp_size=1,
             tp_size=2,
@@ -58,7 +57,7 @@ class TestSetting:
         ),
         # embedding model
         TestSetting(
-            model=os.path.join(models_path_prefix, "BAAI/bge-multilingual-gemma2"),
+            model="BAAI/bge-multilingual-gemma2",
             model_args=[
                 "--runner",
                 "pooling",
@@ -74,7 +73,7 @@ class TestSetting:
         ),
         pytest.param(
             TestSetting(
-                model=os.path.join(models_path_prefix, "BAAI/bge-base-en-v1.5"),
+                model="BAAI/bge-base-en-v1.5",
                 model_args=["--runner", "pooling"],
                 pp_size=1,
                 tp_size=1,
@@ -89,7 +88,7 @@ class TestSetting:
         # vision language model
         # See https://github.com/vllm-project/vllm/issues/26716.
         # TestSetting(
-        #     model=os.path.join(models_path_prefix, "microsoft/Phi-3.5-vision-instruct"),
+        #     model="microsoft/Phi-3.5-vision-instruct",
         #     model_args=["--trust-remote-code", "--max-model-len", "2048"],
         #     pp_size=2,
         #     tp_size=1,

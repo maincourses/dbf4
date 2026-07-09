@@ -10,12 +10,8 @@ from vllm.platforms import current_platform
 from vllm.triton_utils import tl, triton
 
 # Static kernels parameters
-# BASE_BLOCK = 128 if current_platform.has_device_capability(80) else 64
-# NUM_WARPS = 4 if current_platform.is_rocm() else 8
-
-BASE_BLOCK = 32 if current_platform.has_device_capability(80) else 32
-NUM_WARPS = 8
-
+BASE_BLOCK = 128 if current_platform.has_device_capability(80) else 64
+NUM_WARPS = 4 if current_platform.is_rocm() else 8
 
 # To check compatibility
 IS_TURING = current_platform.get_device_capability() == (7, 5)

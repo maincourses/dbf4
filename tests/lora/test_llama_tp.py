@@ -1,6 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
-import os
 import subprocess
 import sys
 
@@ -12,7 +11,7 @@ from vllm import LLM
 from vllm.lora.request import LoRARequest
 from vllm.model_executor.model_loader.tensorizer import TensorizerConfig
 
-from ..utils import VLLM_PATH, create_new_process_for_each_test, multi_gpu_test, models_path_prefix
+from ..utils import VLLM_PATH, create_new_process_for_each_test, multi_gpu_test
 
 PROMPT_TEMPLATE = """<|eot_id|><|start_header_id|>user<|end_header_id|>
 I want you to act as a SQL terminal in front of an example database, you need only to return the sql command to me.Below is an instruction that describes a task, Write a response that appropriately completes the request.
@@ -33,7 +32,7 @@ EXPECTED_LORA_OUTPUT = [
     "SELECT poll_source FROM candidate GROUP BY poll_source ORDER BY count(*) DESC LIMIT 1",  # noqa: E501
 ]
 
-MODEL_PATH = os.path.join(models_path_prefix, "meta-llama/Llama-3.2-3B-Instruct")
+MODEL_PATH = "meta-llama/Llama-3.2-3B-Instruct"
 
 
 def do_sample(

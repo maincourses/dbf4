@@ -7,16 +7,12 @@ doesn't test correctness
 """
 
 import pytest
-import os
 
 from tests.quantization.utils import is_quant_method_supported
-from ..utils import models_path_prefix
-from vllm.platforms import current_platform
-
 
 from ..models.registry import HF_EXAMPLE_MODELS
 
-MODELS = [os.path.join(models_path_prefix, "ai21labs/Jamba-tiny-random"), os.path.join(models_path_prefix, "pfnet/plamo-2-1b")]
+MODELS = ["ai21labs/Jamba-tiny-random", "pfnet/plamo-2-1b"]
 
 
 @pytest.mark.skipif(

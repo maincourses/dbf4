@@ -23,8 +23,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """Inference-only Mixtral model."""
-import os
-import re
 
 import typing
 from collections.abc import Callable, Iterable
@@ -34,7 +32,6 @@ import torch
 from torch import nn
 from transformers import MixtralConfig
 
-from vllm.attention.layer import Attention
 from vllm.compilation.decorators import support_torch_compile
 from vllm.config import CacheConfig, VllmConfig, get_current_vllm_config
 from vllm.distributed import (
@@ -42,6 +39,7 @@ from vllm.distributed import (
     get_pp_group,
     get_tensor_model_parallel_world_size,
 )
+from vllm.model_executor.layers.attention import Attention
 from vllm.model_executor.layers.fused_moe import FusedMoE
 from vllm.model_executor.layers.layernorm import RMSNorm
 from vllm.model_executor.layers.linear import (
@@ -61,8 +59,6 @@ from vllm.model_executor.model_loader.weight_utils import (
     maybe_remap_kv_scale_name,
 )
 from vllm.sequence import IntermediateTensors
-from vllm import _custom_ops as ops
-from vllm.model_executor.utils import pad_weight, gemm_bank_conf
 
 from .interfaces import MixtureOfExperts, SupportsLoRA, SupportsPP
 from .utils import (
@@ -336,18 +332,13 @@ class MixtralModel(nn.Module):
         self.make_empty_intermediate_tensors = make_empty_intermediate_tensors_factory(
             ["hidden_states", "residual"], config.hidden_size
         )
-        self.quant_method = None
-        if quant_config is not None:
-            self.quant_method=quant_config.get_name()
-
-        self.use_llama_nn = os.environ.get('LLAMA_NN') == '1'
 
     def embed_input_ids(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self.embed_tokens(input_ids)
 
     def forward(
         self,
-        input_ids: torch.Tensor,
+        input_ids: torch.Tensor | None,
         positions: torch.Tensor,
         intermediate_tensors: IntermediateTensors | None,
         inputs_embeds: torch.Tensor | None = None,
@@ -486,31 +477,6 @@ class MixtralModel(nn.Module):
                     )
                     weight_loader(param, loaded_weight)
             loaded_params.add(name)
-        
-        if self.use_llama_nn and self.quant_method is None:
-            lay_key_words = [
-                "block_sparse_moe.gate.weight",
-                "self_attn.qkv_proj.weight",
-                "self_attn.o_proj.weight",
-                "lm_head.weight",
-            ]
-            combined_words = "|".join(lay_key_words)
-            
-            for layername in loaded_params:
-                weight = params_dict[layername]
-                os.environ['LM_NN'] = '0' 
-
-                matches = re.findall(combined_words, layername)
-
-                if matches:
-                    _weight = torch.zeros_like(weight.data)
-                    ori_shape =_weight.shape
-                    
-                    ops.trans_w16_gemm(_weight, weight.data, _weight.shape[0], _weight.shape[1])
-                    weight.data.copy_(_weight)
-                    
-                    weight.data=weight.data.reshape(ori_shape[1],-1)
-                    
         return loaded_params
 
 
@@ -608,7 +574,7 @@ class MixtralForCausalLM(nn.Module, SupportsLoRA, SupportsPP, MixtureOfExperts):
 
     def forward(
         self,
-        input_ids: torch.Tensor,
+        input_ids: torch.Tensor | None,
         positions: torch.Tensor,
         intermediate_tensors: IntermediateTensors | None = None,
         inputs_embeds: torch.Tensor | None = None,

@@ -9,20 +9,18 @@ from vllm.platforms import current_platform
 from vllm.utils.torch_utils import set_random_seed
 
 try:
-    if current_platform.is_rocm():
-        from flash_attn import flash_attn_varlen_func
-    else:
-        from vllm.vllm_flash_attn import (
-            fa_version_unsupported_reason,
-            flash_attn_varlen_func,
-            is_fa_version_supported,
-        )
+    from vllm.vllm_flash_attn import (
+        fa_version_unsupported_reason,
+        flash_attn_varlen_func,
+        is_fa_version_supported,
+    )
 except ImportError:
     if current_platform.is_rocm():
         pytest.skip(
             "vllm_flash_attn is not supported for vLLM on ROCm.",
             allow_module_level=True,
         )
+
 
 NUM_HEADS = [(4, 4), (8, 2)]
 HEAD_SIZES = [40, 72, 80, 128, 256]
@@ -93,8 +91,7 @@ def ref_paged_attn(
 
     return torch.cat(outputs, dim=0)
 
-@pytest.mark.skipif(current_platform.is_rocm(),
-                    reason="flash_attn_with_paged_kv is not supported on ROCm.")
+
 @pytest.mark.parametrize("use_out", [True, False])
 @pytest.mark.parametrize(
     "seq_lens", [[(1, 1328), (5, 18), (129, 463)], [(1, 523), (1, 37), (1, 2011)]]

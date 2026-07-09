@@ -1,10 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
-
-import os
-
 import numpy as np
-
 import pytest
 from scipy.spatial.distance import cosine
 
@@ -12,11 +8,9 @@ from vllm import LLM, SamplingParams
 from vllm.config import ModelConfig
 
 from ....utils import RemoteOpenAIServer
-
 from .embed_utils import run_client_embeddings
-from ....utils import models_path_prefix
 
-MODEL_NAME = os.path.join(models_path_prefix, "parasail-ai/GritLM-7B-vllm")
+MODEL_NAME = "parasail-ai/GritLM-7B-vllm"
 MAX_MODEL_LEN = 4000
 ATOL = 0.002
 

@@ -402,19 +402,19 @@ def _has_module(module_name: str) -> bool:
     return importlib.util.find_spec(module_name) is not None
 
 
-def has_pplx() -> bool:
-    """Whether the optional `pplx_kernels` package is available."""
-    return _has_module("pplx_kernels")
-
-
 def has_deep_ep() -> bool:
     """Whether the optional `deep_ep` package is available."""
     return _has_module("deep_ep")
 
 
 def has_deep_gemm() -> bool:
-    """Whether the optional `deepgemm` package is available."""
-    return _has_module("deepgemm")
+    """Whether the optional `deep_gemm` package is available."""
+    return _has_module("deep_gemm")
+
+
+def has_nixl_ep() -> bool:
+    """Whether the optional `nixl_ep` package is available."""
+    return _has_module("nixl_ep")
 
 
 def has_triton_kernels() -> bool:

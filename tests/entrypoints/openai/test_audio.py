@@ -5,20 +5,20 @@ import json
 
 import openai
 import pytest
-import os
 import pytest_asyncio
 
 from vllm.assets.audio import AudioAsset
 from vllm.multimodal.utils import encode_audio_base64, encode_audio_url, fetch_audio
 
-from ...utils import RemoteOpenAIServer, models_path_prefix
+from ...utils import RemoteOpenAIServer
 
-MODEL_NAME = os.path.join(models_path_prefix, "fixie-ai/ultravox-v0_5-llama-3_2-1b")
+MODEL_NAME = "fixie-ai/ultravox-v0_5-llama-3_2-1b"
 TEST_AUDIO_URLS = [
     AudioAsset("winning_call").url,
     AudioAsset("mary_had_lamb").url,
 ]
 MAXIMUM_AUDIOS = 2
+
 
 @pytest.fixture(scope="module")
 def server():

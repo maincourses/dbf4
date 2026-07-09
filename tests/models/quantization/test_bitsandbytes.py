@@ -5,13 +5,13 @@
 Run `pytest tests/quantization/test_bitsandbytes.py`.
 """
 
-import os
 import pytest
+from packaging.version import Version
 from transformers import BitsAndBytesConfig
+from transformers import __version__ as TRANSFORMERS_VERSION
 
 from tests.quantization.utils import is_quant_method_supported
 from vllm.platforms import current_platform
-from ..utils import models_path_prefix
 
 from ...utils import compare_two_settings, multi_gpu_test
 from ..utils import check_embeddings_close, check_logprobs_close
@@ -25,9 +25,9 @@ if current_platform.is_rocm():
     )
 
 models_4bit_to_test = [
-    (os.path.join(models_path_prefix, "facebook/opt-125m"), "quantize opt model inflight"),
+    ("facebook/opt-125m", "quantize opt model inflight"),
     (
-        os.path.join(models_path_prefix, "mistralai/Mistral-7B-Instruct-v0.3"),
+        "mistralai/Mistral-7B-Instruct-v0.3",
         "quantize inflight model with both HF and Mistral format weights",
     ),
 ]
@@ -42,15 +42,15 @@ models_4bit_to_moe_test = [
 
 models_pre_qaunt_4bit_to_test = [
     (
-        os.path.join(models_path_prefix, "PrunaAI/Einstein-v6.1-Llama3-8B-bnb-4bit-smashed"),
+        "PrunaAI/Einstein-v6.1-Llama3-8B-bnb-4bit-smashed",
         "read pre-quantized 4-bit FP4 model",
     ),
-    (os.path.join(models_path_prefix, "poedator/opt-125m-bnb-4bit"), "read pre-quantized 4-bit NF4 opt model"),
+    ("poedator/opt-125m-bnb-4bit", "read pre-quantized 4-bit NF4 opt model"),
 ]
 
 models_pre_quant_8bit_to_test = [
-    (os.path.join(models_path_prefix, "meta-llama/Llama-Guard-3-8B-INT8"), "read pre-quantized llama 8-bit model"),
-    (os.path.join(models_path_prefix, "yec019/fbopt-350m-8bit"), "read pre-quantized 8-bit opt model"),
+    ("meta-llama/Llama-Guard-3-8B-INT8", "read pre-quantized llama 8-bit model"),
+    ("yec019/fbopt-350m-8bit", "read pre-quantized 8-bit opt model"),
 ]
 
 
@@ -140,6 +140,12 @@ def test_load_pp_4bit_bnb_model(model_name, description) -> None:
     compare_two_settings(model_name, common_args, pp_args)
 
 
+@pytest.mark.skipif(
+    Version(TRANSFORMERS_VERSION) >= Version("5.0.0"),
+    reason="Need to add support for quantizing MoE experts with bnb"
+    " in transformers v5. See"
+    " https://github.com/bitsandbytes-foundation/bitsandbytes/issues/1849",
+)
 @pytest.mark.skipif(
     not is_quant_method_supported("bitsandbytes"),
     reason="bitsandbytes is not supported on this GPU type.",

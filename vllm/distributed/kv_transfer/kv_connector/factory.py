@@ -2,9 +2,8 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
 import importlib
-from vllm import envs
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Optional, cast
+from typing import TYPE_CHECKING, cast
 
 from vllm.distributed.kv_transfer.kv_connector.base import (
     KVConnectorBase,
@@ -45,8 +44,7 @@ class KVConnectorFactory:
         cls,
         config: "VllmConfig",
         role: KVConnectorRole,
-        kv_cache_config: Optional["KVCacheConfig"] = None,
-        dp_rank: int = -1,
+        kv_cache_config: "KVCacheConfig | None" = None,
     ) -> KVConnectorBase:
         kv_transfer_config = config.kv_transfer_config
         if kv_transfer_config is None:
@@ -79,8 +77,6 @@ class KVConnectorFactory:
         if compat_sig:
             # Old signature: __init__(self, vllm_config, role)
             return connector_cls(config, role)
-        elif envs.VLLM_USE_DP_CONNECTOR:
-            return connector_cls(config, role, kv_cache_config, dp_rank)
         else:
             # New signature: __init__(self, vllm_config, role, kv_cache_config)
             return connector_cls(config, role, kv_cache_config)
@@ -154,20 +150,16 @@ KVConnectorFactory.register_connector(
 )
 
 KVConnectorFactory.register_connector(
+    "ExampleHiddenStatesConnector",
+    "vllm.distributed.kv_transfer.kv_connector.v1.example_hidden_states_connector",
+    "ExampleHiddenStatesConnector",
+)
+
+KVConnectorFactory.register_connector(
     "P2pNcclConnector",
     "vllm.distributed.kv_transfer.kv_connector.v1.p2p.p2p_nccl_connector",
     "P2pNcclConnector",
 )
-
-KVConnectorFactory.register_connector(
-    "DuSwiftConnector",
-    "vllm.distributed.kv_transfer.kv_connector.v1.du.du_swift_connector",
-    "DuSwiftConnector")
-
-KVConnectorFactory.register_connector(
-    "DuSwiftConnectorDp",
-    "vllm.distributed.kv_transfer.kv_connector.v1.du.du_swift_connector_dp",
-    "DuSwiftConnectorDp")
 
 KVConnectorFactory.register_connector(
     "LMCacheConnectorV1",
@@ -212,6 +204,12 @@ KVConnectorFactory.register_connector(
 )
 KVConnectorFactory.register_connector(
     "MooncakeConnector",
-    "vllm.distributed.kv_transfer.kv_connector.v1.mooncake_connector",
+    "vllm.distributed.kv_transfer.kv_connector.v1.mooncake.mooncake_connector",
     "MooncakeConnector",
+)
+
+KVConnectorFactory.register_connector(
+    "FlexKVConnectorV1",
+    "vllm.distributed.kv_transfer.kv_connector.v1.flexkv_connector",
+    "FlexKVConnectorV1",
 )

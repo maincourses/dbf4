@@ -5,7 +5,6 @@
 import asyncio
 import inspect
 
-import os
 import pytest
 
 from tests.utils import wait_for_gpu_memory_to_clear
@@ -19,9 +18,8 @@ from vllm.model_executor.models.llama import LlamaForCausalLM
 from vllm.utils.torch_utils import cuda_device_count_stateless
 from vllm.v1.engine.async_llm import AsyncLLM
 from vllm.v1.engine.exceptions import EngineDeadError
-from ...utils import models_path_prefix
 
-MODELS = [os.path.join(models_path_prefix, "hmellor/tiny-random-LlamaForCausalLM")]
+MODELS = ["hmellor/tiny-random-LlamaForCausalLM"]
 
 
 def evil_forward(self, *args, **kwargs):

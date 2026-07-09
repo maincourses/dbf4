@@ -6,9 +6,7 @@
  */
 
 #include "type_convert.cuh"
-#ifndef USE_ROCM
 #include "quantization/w8a8/fp8/common.cuh"
-#endif
 #include "dispatch_utils.h"
 #include "cub_helpers.h"
 #include "core/batch_invariant.hpp"

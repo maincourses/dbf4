@@ -1,10 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
-import os
 import lm_eval
 
-from ...utils import RemoteOpenAIServer, models_path_prefix
+from ...utils import RemoteOpenAIServer
 
 # arc-easy uses prompt_logprobs=1, logprobs=1
 TASK = "arc_easy"
@@ -13,7 +12,7 @@ RTOL = 0.03
 EXPECTED_VALUE = 0.62
 
 # FIXME(rob): enable prefix caching once supported.
-MODEL = os.path.join(models_path_prefix, "meta-llama/Llama-3.2-1B-Instruct")
+MODEL = "meta-llama/Llama-3.2-1B-Instruct"
 MODEL_ARGS = f"pretrained={MODEL},enforce_eager=True,enable_prefix_caching=False,gpu_memory_utilization=0.8"  # noqa: E501
 SERVER_ARGS = [
     "--enforce_eager",

@@ -14,14 +14,14 @@ fptr_t init_custom_ar(const std::vector<fptr_t>& fake_ipc_ptrs,
                       torch::Tensor& rank_data, int64_t rank,
                       bool fully_connected) {
   int world_size = fake_ipc_ptrs.size();
-  if (world_size > 16)
+  if (world_size > 8)
     throw std::invalid_argument("world size > 8 is not supported");
   if (world_size % 2 != 0)
     throw std::invalid_argument("Odd num gpus is not supported for now");
   if (rank < 0 || rank >= world_size)
     throw std::invalid_argument("invalid rank passed in");
 
-  vllm::Signal* ipc_ptrs[16];
+  vllm::Signal* ipc_ptrs[8];
   for (int i = 0; i < world_size; i++) {
     ipc_ptrs[i] = reinterpret_cast<vllm::Signal*>(fake_ipc_ptrs[i]);
   }
@@ -78,56 +78,29 @@ void all_reduce(fptr_t _fa, torch::Tensor& inp, torch::Tensor& out,
   } else {
     reg_buffer = inp.data_ptr();
   }
-  if (fa->fully_connected_) {
-    switch (out.scalar_type()) {
-      case at::ScalarType::Float: {
-        fa->allreduce<float>(stream, reinterpret_cast<float*>(reg_buffer),
-                            reinterpret_cast<float*>(out.data_ptr()),
-                            out.numel());
-        break;
-      }
-      case at::ScalarType::Half: {
-        fa->allreduce<half>(stream, reinterpret_cast<half*>(reg_buffer),
-                            reinterpret_cast<half*>(out.data_ptr()), out.numel());
-        break;
-      }
-  // #if (__CUDA_ARCH__ >= 800 || !defined(__CUDA_ARCH__))
-      case at::ScalarType::BFloat16: {
-        fa->allreduce<nv_bfloat16>(
-            stream, reinterpret_cast<nv_bfloat16*>(reg_buffer),
-            reinterpret_cast<nv_bfloat16*>(out.data_ptr()), out.numel());
-        break;
-      }
-  // #endif
-      default:
-        throw std::runtime_error(
-            "custom allreduce only supports float32, float16 and bfloat16");
+  switch (out.scalar_type()) {
+    case at::ScalarType::Float: {
+      fa->allreduce<float>(stream, reinterpret_cast<float*>(reg_buffer),
+                           reinterpret_cast<float*>(out.data_ptr()),
+                           out.numel());
+      break;
     }
-  } else {
-    switch (out.scalar_type()) {
-      case at::ScalarType::Float: {
-        fa->allreduce_pcie<float>(stream, reinterpret_cast<float*>(reg_buffer),
-                            reinterpret_cast<float*>(out.data_ptr()),
-                            out.numel());
-        break;
-      }
-      case at::ScalarType::Half: {
-        fa->allreduce_pcie<half>(stream, reinterpret_cast<half*>(reg_buffer),
-                            reinterpret_cast<half*>(out.data_ptr()), out.numel());
-        break;
-      }
-  // #if (__CUDA_ARCH__ >= 800 || !defined(__CUDA_ARCH__))
-      case at::ScalarType::BFloat16: {
-        fa->allreduce_pcie<nv_bfloat16>(
-            stream, reinterpret_cast<nv_bfloat16*>(reg_buffer),
-            reinterpret_cast<nv_bfloat16*>(out.data_ptr()), out.numel());
-        break;
-      }
-  // #endif
-      default:
-        throw std::runtime_error(
-            "custom allreduce only supports float32, float16 and bfloat16");
+    case at::ScalarType::Half: {
+      fa->allreduce<half>(stream, reinterpret_cast<half*>(reg_buffer),
+                          reinterpret_cast<half*>(out.data_ptr()), out.numel());
+      break;
     }
+#if (__CUDA_ARCH__ >= 800 || !defined(__CUDA_ARCH__))
+    case at::ScalarType::BFloat16: {
+      fa->allreduce<nv_bfloat16>(
+          stream, reinterpret_cast<nv_bfloat16*>(reg_buffer),
+          reinterpret_cast<nv_bfloat16*>(out.data_ptr()), out.numel());
+      break;
+    }
+#endif
+    default:
+      throw std::runtime_error(
+          "custom allreduce only supports float32, float16 and bfloat16");
   }
 }
 
@@ -140,7 +113,7 @@ int64_t meta_size() { return sizeof(vllm::Signal); }
 void register_buffer(fptr_t _fa, const std::vector<fptr_t>& fake_ipc_ptrs) {
   auto fa = reinterpret_cast<vllm::CustomAllreduce*>(_fa);
   TORCH_CHECK(fake_ipc_ptrs.size() == fa->world_size_);
-  void* ipc_ptrs[16];
+  void* ipc_ptrs[8];
   for (int i = 0; i < fake_ipc_ptrs.size(); i++) {
     ipc_ptrs[i] = reinterpret_cast<void*>(fake_ipc_ptrs[i]);
   }

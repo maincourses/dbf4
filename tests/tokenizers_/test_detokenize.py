@@ -4,7 +4,6 @@
 from collections.abc import Generator
 from typing import Any
 
-import os
 import pytest
 from transformers import AutoTokenizer, PreTrainedTokenizer, PreTrainedTokenizerFast
 
@@ -16,7 +15,6 @@ from vllm.v1.engine.detokenizer import (
     IncrementalDetokenizer,
     SlowIncrementalDetokenizer,
 )
-from ..utils import models_path_prefix
 
 SPECIAL_TOKS_TRUTH = [
     "Some text with adjacent special tokens                <|padding|><|padding|><fim_prefix><fim_middle><fim_suffix>other text<fim_pad>",  # noqa
@@ -34,18 +32,18 @@ TRUTH = [
 ] + SPECIAL_TOKS_TRUTH
 
 TOKENIZERS = [
-    os.path.join(models_path_prefix, "facebook/opt-125m"),
-    os.path.join(models_path_prefix, "gpt2"),
-    os.path.join(models_path_prefix, "bigcode/tiny_starcoder_py"),
-    os.path.join(models_path_prefix, "EleutherAI/gpt-j-6b"),
-    os.path.join(models_path_prefix, "EleutherAI/pythia-70m"),
-    os.path.join(models_path_prefix, "bigscience/bloom-560m"),
+    "facebook/opt-125m",
+    "gpt2",
+    "bigcode/tiny_starcoder_py",
+    "EleutherAI/gpt-j-6b",
+    "EleutherAI/pythia-70m",
+    "bigscience/bloom-560m",
     # FIXME: mosaicml/mpt-7b has been deleted
     # "mosaicml/mpt-7b",
-    os.path.join(models_path_prefix, "tiiuae/falcon-7b"),
-    os.path.join(models_path_prefix, "meta-llama/Llama-3.2-1B-Instruct"),
-    os.path.join(models_path_prefix, "codellama/CodeLlama-7b-hf"),
-    os.path.join(models_path_prefix, "mistralai/Pixtral-12B-2409"),
+    "tiiuae/falcon-7b",
+    "meta-llama/Llama-3.2-1B-Instruct",
+    "codellama/CodeLlama-7b-hf",
+    "mistralai/Pixtral-12B-2409",
 ]
 
 
@@ -69,7 +67,6 @@ def _run_incremental_decode(
         mm_features=None,
         sampling_params=params,
         pooling_params=None,
-        eos_token_id=None,
         arrival_time=0.0,
         lora_request=None,
         cache_salt=None,
@@ -101,7 +98,7 @@ def tokenizer(tokenizer_name):
     )
 
 
-@pytest.mark.parametrize("tokenizer_name", [os.path.join(models_path_prefix, "mistralai/Pixtral-12B-2409")])
+@pytest.mark.parametrize("tokenizer_name", ["mistralai/Pixtral-12B-2409"])
 @pytest.mark.parametrize(
     "truth",
     [

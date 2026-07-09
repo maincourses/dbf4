@@ -4,15 +4,12 @@
 import weakref
 
 import pytest
-import os
 
 from vllm import LLM, PoolingParams
 from vllm.distributed import cleanup_dist_env_and_memory
-
 from vllm.platforms import current_platform
-from ....utils import models_path_prefix
 
-MODEL_NAME = os.path.join(models_path_prefix, "intfloat/multilingual-e5-small")
+MODEL_NAME = "intfloat/multilingual-e5-small"
 
 PROMPTS = [
     "Hello, my name is",

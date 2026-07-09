@@ -3,10 +3,8 @@
 import subprocess
 
 import pytest
-import os
-from ..utils import models_path_prefix
 
-MODEL_NAME = os.path.join(models_path_prefix, "meta-llama/Llama-3.2-1B-Instruct")
+MODEL_NAME = "meta-llama/Llama-3.2-1B-Instruct"
 
 
 @pytest.mark.benchmark

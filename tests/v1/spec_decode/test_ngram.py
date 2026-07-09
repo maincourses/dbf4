@@ -1,7 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
-
-import os
 import numpy as np
 
 from vllm.config import (
@@ -13,7 +11,6 @@ from vllm.v1.spec_decode.ngram_proposer import (
     NgramProposer,
     _find_longest_matched_ngram_and_propose_tokens,
 )
-from ...utils import models_path_prefix
 
 
 def test_find_longest_matched_ngram_and_propose_tokens():
@@ -68,7 +65,7 @@ def test_find_longest_matched_ngram_and_propose_tokens():
 def test_ngram_proposer():
     def get_ngram_proposer(min_n: int, max_n: int, k: int) -> NgramProposer:
         # Dummy model config. Just to set max_model_len.
-        model_config = ModelConfig(model=os.path.join(models_path_prefix, "facebook/opt-125m"))
+        model_config = ModelConfig(model="facebook/opt-125m")
         return NgramProposer(
             vllm_config=VllmConfig(
                 model_config=model_config,

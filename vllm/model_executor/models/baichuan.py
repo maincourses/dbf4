@@ -21,9 +21,6 @@
 # limitations under the License.
 """Inference-only BaiChuan model compatible with HuggingFace weights."""
 
-import os
-import re
-
 import math
 from collections.abc import Iterable
 from itertools import islice
@@ -32,8 +29,6 @@ import torch
 from torch import nn
 from transformers import PretrainedConfig
 
-from vllm import envs
-from vllm.attention.layer import Attention
 from vllm.compilation.decorators import support_torch_compile
 from vllm.config import CacheConfig, VllmConfig
 from vllm.distributed import (
@@ -42,6 +37,7 @@ from vllm.distributed import (
     get_tensor_model_parallel_world_size,
 )
 from vllm.model_executor.layers.activation import SiluAndMul
+from vllm.model_executor.layers.attention import Attention
 from vllm.model_executor.layers.layernorm import RMSNorm
 from vllm.model_executor.layers.linear import (
     MergedColumnParallelLinear,
@@ -69,10 +65,6 @@ from .utils import (
     make_layers,
     maybe_prefix,
 )
-
-from vllm import _custom_ops as ops
-from vllm.model_executor.utils import pad_weight, gemm_bank_conf
-
 
 
 def _get_alibi_slopes(total_num_heads: int) -> torch.Tensor:
@@ -209,10 +201,6 @@ class BaiChuanAttention(nn.Module):
                 quant_config=quant_config,
                 prefix=f"{prefix}.attn",
             )
-        self.quant_method = None
-        if quant_config is not None:
-            self.quant_method=quant_config.get_name()
-            self.quant_config=quant_config
 
     def forward(
         self,
@@ -220,8 +208,6 @@ class BaiChuanAttention(nn.Module):
         hidden_states: torch.Tensor,
     ) -> torch.Tensor:
         qkv, _ = self.W_pack(hidden_states)
-        # if os.environ.get('FA_PAD') == '1' and self.quant_method is None:
-        #     qkv = qkv[...,:-32]
         q, k, v = qkv.chunk(chunks=3, dim=-1)
         if self.position_embedding != "ALIBI":
             q, k = self.rotary_emb(positions, q, k)
@@ -319,22 +305,13 @@ class BaiChuanModel(nn.Module):
         self.make_empty_intermediate_tensors = make_empty_intermediate_tensors_factory(
             ["hidden_states", "residual"], config.hidden_size
         )
-        self.quant_method = None
-        if quant_config is not None:
-            self.quant_method=quant_config.get_name()
-            self.quant_config=quant_config
-
-        self.use_llama_nn = os.environ.get('LLAMA_NN') == '1'
-        self.use_gemm_pad = os.environ.get('GEMM_PAD') == '1'
-        self.use_fa_pad = os.environ.get('FA_PAD') == '1'
-        self.use_awq_pad = os.environ.get('AWQ_PAD') == '1'
 
     def embed_input_ids(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self.embed_tokens(input_ids)
 
     def forward(
         self,
-        input_ids: torch.Tensor,
+        input_ids: torch.Tensor | None,
         positions: torch.Tensor,
         intermediate_tensors: IntermediateTensors | None,
         inputs_embeds: torch.Tensor | None = None,
@@ -400,89 +377,6 @@ class BaiChuanModel(nn.Module):
                 weight_loader = getattr(param, "weight_loader", default_weight_loader)
                 weight_loader(param, loaded_weight)
             loaded_params.add(name)
-            
-        if self.use_llama_nn and self.quant_method is None :
-            lay_key_words = [
-                "self_attn.W_pack.weight",
-                "self_attn.o_proj.weight",
-                "mlp.gate_up_proj.weight",
-                "mlp.down_proj.weight",
-                "lm_head.weight"
-            ]
-            combined_words = "|".join(lay_key_words)
-            
-            # lay_qkv_words = ["self_attn.W_pack.weight"]   
-            # qkv_words = "|".join(lay_qkv_words)  
-            
-            for layername in loaded_params:
-                weight = params_dict[layername]
-                if "lm_head.weight" in layername and weight.shape[1] >= 4096:
-                    lay_key_words.append("lm_head.weight")
-                    combined_words = "|".join(lay_key_words)
-                    os.environ['LM_NN'] = '1'  
-                else:
-                    os.environ['LM_NN'] = '0' 
-                matches = re.findall(combined_words, layername)
-                if matches:      
-                    # if self.use_gemm_pad and gemm_bank_conf(weight.data.shape[0]):
-                    #     weight.data = pad_weight(weight.data, 32)  
-                        
-                    # if self.use_fa_pad and (re.findall(qkv_words, layername)):
-                    #     if not gemm_bank_conf(weight.data.shape[0]):
-                    #         weight.data = pad_weight(weight.data, 32)
-                                    
-                    _weight = torch.zeros_like(weight.data)
-                    ori_shape =_weight.shape
-                    
-                    ops.trans_w16_gemm(_weight, weight.data, _weight.shape[0], _weight.shape[1])
-                    weight.data.copy_(_weight)
-                    
-                    weight.data=weight.data.reshape(ori_shape[1], -1)
-        else:
-            os.environ['LM_NN'] = '0'
-            os.environ['LLAMA_NN'] = '0'
-            
-        # if self.quant_method == "awq" and not envs.VLLM_USE_TRITON_AWQ:
-        #     lay_key_words = [
-        #         "self_attn.W_pack.qweight",
-        #         "self_attn.o_proj.qweight",
-        #         "mlp.gate_up_proj.qweight",
-        #         "mlp.down_proj.qweight"
-        #     ]
-        #     combined_words = "|".join(lay_key_words)
-            
-        #     for layername in loaded_params:
-        #         weight = params_dict[layername]
-                
-        #         matches = re.findall(combined_words, layername)
-        #         if matches:
-        #             qweight =params_dict[layername]
-        #             qzeros=params_dict[layername.replace("qweight", "qzeros")]
-        #             scales=params_dict[layername.replace("qweight", "scales")]
-        #             zeros_and_scalse =params_dict[layername.replace("qweight", "zeros_and_scales")]
-                    
-        #             group_size= self.quant_config.group_size 
-                   
-        #             dim_n = scales.data.shape[1]
-        #             dim_k = qweight.data.shape[0]
-        #             pad_group=2              
-                    
-        #             _qw, _sz=ops.convert_s4(qweight,qzeros,scales,int(group_size)) 
-                    
-        #             sz = ops.sz_permute(_sz).reshape(-1,dim_n)       
-                    
-        #             zeros_and_scalse.data.copy_(sz)
-        #             qweight.data.copy_(_qw)
-                    
-        #             #reshape
-        #             zeros_and_scalse.data=zeros_and_scalse.reshape(dim_n,-1)    #[k/greop_size,n]------>[n,k/group_size]
-        #             qweight.data=qweight.data.reshape(dim_n,-1)                      #[k,n/8]---->[n,k/8]  
-                
-        #             if dim_k % 4096==0 and self.use_awq_pad:
-        #                 zeros_and_scalse_pad= torch.zeros(dim_n,pad_group,dtype=torch.int32).cuda()
-        #                 zeros_and_scalse.data=torch.cat((zeros_and_scalse.data,zeros_and_scalse_pad),dim=1).contiguous()
-        #                 qweight_pad= torch.zeros(dim_n,int(group_size//4),dtype=torch.int32).cuda()
-        #                 qweight.data=torch.cat((qweight.data,qweight_pad),dim=1).contiguous()  
         return loaded_params
 
 
@@ -534,7 +428,7 @@ class BaiChuanBaseForCausalLM(nn.Module, SupportsLoRA, SupportsPP, SupportsQuant
 
     def forward(
         self,
-        input_ids: torch.Tensor,
+        input_ids: torch.Tensor | None,
         positions: torch.Tensor,
         intermediate_tensors: IntermediateTensors | None = None,
         inputs_embeds: torch.Tensor | None = None,

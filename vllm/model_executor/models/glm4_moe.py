@@ -32,8 +32,6 @@ import torch
 from torch import nn
 from transformers.models.glm4_moe import Glm4MoeConfig
 
-from vllm import envs
-from vllm.attention.layer import Attention, FusedQkvSplitRmsNormRopeAttention
 from vllm.compilation.decorators import support_torch_compile
 from vllm.config import CacheConfig, VllmConfig, get_current_vllm_config
 from vllm.distributed import (
@@ -43,8 +41,9 @@ from vllm.distributed import (
 )
 from vllm.logger import init_logger
 from vllm.model_executor.layers.activation import SiluAndMul
+from vllm.model_executor.layers.attention import Attention
 from vllm.model_executor.layers.fused_moe import SharedFusedMoE
-from vllm.model_executor.layers.layernorm import RMSNorm, FusedRMSNormQuant
+from vllm.model_executor.layers.layernorm import RMSNorm
 from vllm.model_executor.layers.linear import (
     MergedColumnParallelLinear,
     QKVParallelLinear,
@@ -108,17 +107,10 @@ class Glm4MoeMLP(nn.Module):
             )
         self.act_fn = SiluAndMul()
 
-    def forward(self, x, 
-                iqis: tuple[torch.Tensor, torch.Tensor] | None = None):
-        if envs.USE_FUSED_SILU_MUL_QUANT and iqis is not None:
-            gate_up, _ = self.gate_up_proj(x, iqis=iqis)
-            from lmslim.quantize.quant_ops import lm_fuse_silu_mul_quant
-            xq, xs = lm_fuse_silu_mul_quant(gate_up)
-            x, _ = self.down_proj(gate_up, iqis=(xq, xs))
-        else:
-            gate_up, _ = self.gate_up_proj(x)
-            x = self.act_fn(gate_up)
-            x, _ = self.down_proj(x)
+    def forward(self, x):
+        gate_up, _ = self.gate_up_proj(x)
+        x = self.act_fn(gate_up)
+        x, _ = self.down_proj(x)
         return x
 
 
@@ -208,22 +200,16 @@ class Glm4MoE(nn.Module):
             router_logits_dtype=torch.float32,
         )
 
-    def forward(self, 
-                hidden_states: torch.Tensor,
-                iqis: tuple[torch.Tensor, torch.Tensor] | None = None
-                ) -> torch.Tensor:
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         num_tokens, hidden_dim = hidden_states.shape
         hidden_states = hidden_states.view(-1, hidden_dim)
 
         # router_logits: (num_tokens, n_experts)
         router_logits = self.gate(hidden_states.to(dtype=torch.float32))
-        if envs.USE_FUSED_RMS_QUANT and iqis is not None:
-            fused_moe_out = self.experts(
-                hidden_states=hidden_states, router_logits=router_logits,
-                iqis=iqis)
-        else:
-            fused_moe_out = self.experts(
-            hidden_states=hidden_states, router_logits=router_logits)
+
+        fused_moe_out = self.experts(
+            hidden_states=hidden_states, router_logits=router_logits
+        )
 
         if self.shared_experts is not None:
             shared_output, final_hidden_states = fused_moe_out
@@ -304,27 +290,15 @@ class Glm4MoeAttention(nn.Module):
             max_position=max_position_embeddings,
             rope_parameters=config.rope_parameters,
         )
-
-        if not envs.VLLM_V1_USE_FUSED_QKV_SPLIT_RMS_ROPE_KVSTORE:
-            self.attn = Attention(
-                self.num_heads,
-                self.head_dim,
-                self.scaling,
-                num_kv_heads=self.num_kv_heads,
-                cache_config=cache_config,
-                quant_config=quant_config,
-                prefix=f"{prefix}.attn",
-            )
-        else:
-            self.attn = FusedQkvSplitRmsNormRopeAttention(
-                self.num_heads,
-                self.head_dim,
-                self.scaling,
-                num_kv_heads=self.num_kv_heads,
-                cache_config=cache_config,
-                quant_config=quant_config,
-                prefix=f"{prefix}.attn",
-            )
+        self.attn = Attention(
+            self.num_heads,
+            self.head_dim,
+            self.scaling,
+            num_kv_heads=self.num_kv_heads,
+            cache_config=cache_config,
+            quant_config=quant_config,
+            prefix=f"{prefix}.attn",
+        )
 
         if self.use_qk_norm:
             self.q_norm = RMSNorm(self.head_dim, eps=rms_norm_eps)
@@ -334,39 +308,19 @@ class Glm4MoeAttention(nn.Module):
         self,
         positions: torch.Tensor,
         hidden_states: torch.Tensor,
-        iqis: tuple[torch.Tensor, torch.Tensor] | None = None
     ) -> torch.Tensor:
-        qkv, _ = self.qkv_proj(hidden_states, iqis=iqis)
+        qkv, _ = self.qkv_proj(hidden_states)
+        q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
+        if self.use_qk_norm:
+            q = self.q_norm(q.reshape(-1, self.num_heads, self.head_dim)).reshape(
+                q.shape
+            )
+            k = self.k_norm(k.reshape(-1, self.num_kv_heads, self.head_dim)).reshape(
+                k.shape
+            )
 
-        if not envs.VLLM_V1_USE_FUSED_QKV_SPLIT_RMS_ROPE_KVSTORE:
-            q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
-            if self.use_qk_norm:
-                q = self.q_norm(q.reshape(-1, self.num_heads, self.head_dim)).reshape(
-                    q.shape
-                )
-                k = self.k_norm(k.reshape(-1, self.num_kv_heads, self.head_dim)).reshape(
-                    k.shape
-                )
-
-            q, k = self.rotary_emb(positions, q, k)
-            attn_output = self.attn(q, k, v)
-        else:
-            cos_sin_cache = self.rotary_emb.cos_sin_cache
-            if (cos_sin_cache.device != qkv.device
-                    or cos_sin_cache.dtype != qkv.dtype):
-                cos_sin_cache = cos_sin_cache.to(qkv.device,
-                                                dtype=qkv.dtype,
-                                                non_blocking=True)
-                # Persist the converted cache so we don't re-copy/re-allocate
-                # on every forward when the original buffer starts on CPU.
-                self.rotary_emb.cos_sin_cache = cos_sin_cache
-            attn_output = self.attn(qkv,
-                                    positions,
-                                    cos_sin_cache,
-                                    self.q_norm.weight,
-                                    self.k_norm.weight,
-                                    self.q_norm.variance_epsilon,
-                                    is_neox=self.rotary_emb.is_neox_style)
+        q, k = self.rotary_emb(positions, q, k)
+        attn_output = self.attn(q, k, v)
         output, _ = self.o_proj(attn_output)
         return output
 
@@ -422,19 +376,10 @@ class Glm4MoeDecoderLayer(nn.Module):
                 prefix=f"{prefix}.mlp",
             )
 
-        if envs.USE_FUSED_RMS_QUANT:
-            self.input_layernorm = FusedRMSNormQuant(config.hidden_size, eps=config.rms_norm_eps)
-        else:
-            self.input_layernorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-
-        if envs.USE_FUSED_RMS_QUANT:
-            self.post_attention_layernorm = FusedRMSNormQuant(
-                config.hidden_size, eps=config.rms_norm_eps
-            )
-        else:
-            self.post_attention_layernorm = RMSNorm(
-                config.hidden_size, eps=config.rms_norm_eps
-            )
+        self.input_layernorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.post_attention_layernorm = RMSNorm(
+            config.hidden_size, eps=config.rms_norm_eps
+        )
         self.routed_scaling_factor = config.routed_scaling_factor
 
     def forward(
@@ -443,39 +388,14 @@ class Glm4MoeDecoderLayer(nn.Module):
         hidden_states: torch.Tensor,
         residual: torch.Tensor | None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        if not envs.USE_FUSED_RMS_QUANT:
-            if residual is None:
-                residual = hidden_states
-                hidden_states = self.input_layernorm(hidden_states)
-            else:
-                hidden_states, residual = self.input_layernorm(hidden_states, residual)
-            hidden_states = self.self_attn(positions=positions, hidden_states=hidden_states)
+        if residual is None:
+            residual = hidden_states
+            hidden_states = self.input_layernorm(hidden_states)
         else:
-            if residual is None:
-                residual = hidden_states.clone()
-                i_q, i_s, _ = self.input_layernorm(x=hidden_states, 
-                                                residual=None, 
-                                                quant_dtype=torch.int8,
-                                                update_input=False
-                                                )
-            else:
-                i_q, i_s, residual = self.input_layernorm(x=hidden_states, 
-                                                      residual=residual, 
-                                                      quant_dtype=torch.int8,
-                                                      update_input=False
-                                                      )
-            hidden_states = self.self_attn(positions=positions, hidden_states=hidden_states, iqis=(i_q, i_s))
-        
-        if envs.USE_FUSED_RMS_QUANT:
-            update_hs = True if isinstance(self.mlp, Glm4MoE) else False
-            i_q, i_s, residual = self.post_attention_layernorm(x=hidden_states,
-                                                               residual=residual,
-                                                               quant_dtype=torch.int8,
-                                                               update_input=update_hs)
-            hidden_states = self.mlp(hidden_states, iqis=(i_q, i_s))
-        else:
-            hidden_states, residual = self.post_attention_layernorm(hidden_states, residual)
-            hidden_states = self.mlp(hidden_states)
+            hidden_states, residual = self.input_layernorm(hidden_states, residual)
+        hidden_states = self.self_attn(positions=positions, hidden_states=hidden_states)
+        hidden_states, residual = self.post_attention_layernorm(hidden_states, residual)
+        hidden_states = self.mlp(hidden_states)
         return hidden_states, residual
 
 
@@ -531,7 +451,7 @@ class Glm4MoeModel(nn.Module):
 
     def forward(
         self,
-        input_ids: torch.Tensor,
+        input_ids: torch.Tensor | None,
         positions: torch.Tensor,
         intermediate_tensors: IntermediateTensors | None = None,
         inputs_embeds: torch.Tensor | None = None,
@@ -767,7 +687,7 @@ class Glm4MoeForCausalLM(nn.Module, SupportsPP, SupportsLoRA, Glm4MixtureOfExper
 
     def forward(
         self,
-        input_ids: torch.Tensor,
+        input_ids: torch.Tensor | None,
         positions: torch.Tensor,
         intermediate_tensors: IntermediateTensors | None = None,
         inputs_embeds: torch.Tensor | None = None,

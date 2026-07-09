@@ -4,14 +4,10 @@
 
 from typing import Any
 
-
-import os
 import pytest
 
-from vllm.platforms import current_platform
-
 from ..conftest import HfRunner, VllmRunner
-from ..utils import multi_gpu_test, prep_prompts, models_path_prefix
+from ..utils import multi_gpu_test, prep_prompts
 from .registry import HF_EXAMPLE_MODELS
 from .utils import check_embeddings_close, check_logprobs_close
 
@@ -64,9 +60,9 @@ def check_implementation(
 @pytest.mark.parametrize(
     "model,model_impl",
     [
-        (os.path.join(models_path_prefix, "meta-llama/Llama-3.2-1B-Instruct"), "transformers"),
-        (os.path.join(models_path_prefix, "hmellor/Ilama-3.2-1B"), "auto"),  # CUSTOM CODE
-        (os.path.join(models_path_prefix, "allenai/OLMoE-1B-7B-0924"), "transformers"),  # MoE
+        ("meta-llama/Llama-3.2-1B-Instruct", "transformers"),
+        ("hmellor/Ilama-3.2-1B", "auto"),  # CUSTOM CODE
+        ("allenai/OLMoE-1B-7B-0924", "transformers"),  # MoE
     ],
 )  # trust_remote_code=True by default
 def test_models(
@@ -100,7 +96,7 @@ def test_hybrid_attention(vllm_runner: type[VllmRunner]) -> None:
         vllm_runner,
         vllm_runner,
         prompts,
-        model=os.path.join(models_path_prefix, "hmellor/tiny-random-Gemma2ForCausalLM"),
+        model="hmellor/tiny-random-Gemma2ForCausalLM",
         kwargs_ref=kwargs_ref,
         kwargs_test=kwargs_test,
     )
@@ -117,7 +113,7 @@ def test_distributed(
         hf_runner,
         vllm_runner,
         example_prompts,
-        os.path.join(models_path_prefix, "meta-llama/Llama-3.2-1B-Instruct"),
+        "meta-llama/Llama-3.2-1B-Instruct",
         kwargs_test=kwargs,
     )
 
@@ -125,14 +121,15 @@ def test_distributed(
 @pytest.mark.parametrize(
     "model, quantization_kwargs",
     [
-        (os.path.join(models_path_prefix, "TheBloke/TinyLlama-1.1B-Chat-v0.3-AWQ"), {}),
-        (os.path.join(models_path_prefix, "TheBloke/TinyLlama-1.1B-Chat-v0.3-GPTQ"), {}),
+        ("TheBloke/TinyLlama-1.1B-Chat-v0.3-AWQ", {}),
+        ("TheBloke/TinyLlama-1.1B-Chat-v0.3-GPTQ", {}),
         (
-            os.path.join(models_path_prefix, "meta-llama/Llama-3.2-1B-Instruct"),
+            "meta-llama/Llama-3.2-1B-Instruct",
             {
                 "quantization": "bitsandbytes",
             },
         ),
+        ("unsloth/tinyllama-bnb-4bit", {}),
     ],
 )
 @pytest.mark.parametrize("max_tokens", [32])
@@ -145,12 +142,6 @@ def test_quantization(
     max_tokens: int,
     num_logprobs: int,
 ) -> None:
-    if (
-        current_platform.is_rocm()
-        and quantization_kwargs.get("quantization", "") == "bitsandbytes"
-    ):
-        pytest.skip("bitsandbytes quantization is currently not supported in rocm.")
-
     with vllm_runner(
         model,
         model_impl="auto",
@@ -186,9 +177,9 @@ def test_quantization(
     "model",
     [
         # Layers live in `layers`
-        os.path.join(models_path_prefix, "Qwen/Qwen3-Embedding-0.6B"),
+        "Qwen/Qwen3-Embedding-0.6B",
         # Layers live in `model.layers`
-        os.path.join(models_path_prefix, "meta-llama/Llama-3.2-1B-Instruct"),
+        "meta-llama/Llama-3.2-1B-Instruct",
     ],
 )
 def test_embed_loading(vllm_runner, model):

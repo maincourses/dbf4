@@ -53,17 +53,17 @@ using FlagType = uint32_t;
 // waiting for counter. We use alternating counter array to avoid this
 // possibility.
 struct Signal {
-  alignas(128) FlagType start[kMaxBlocks][16];
-  alignas(128) FlagType end[kMaxBlocks][16];
+  alignas(128) FlagType start[kMaxBlocks][8];
+  alignas(128) FlagType end[kMaxBlocks][8];
   alignas(128) FlagType _flag[kMaxBlocks];  // incremental flags for each rank
 };
 
 struct __align__(16) RankData {
-  const void* ptrs[16];
+  const void* ptrs[8];
 };
 
 struct __align__(16) RankSignals {
-  Signal* signals[16];
+  Signal* signals[8];
 };
 
 // like std::array, but aligned
@@ -105,7 +105,7 @@ DINLINE half& assign_add(half& a, half b) {
 }
 DINLINE float& assign_add(float& a, float b) { return a += b; }
 
-// #if (__CUDA_ARCH__ >= 800 || !defined(__CUDA_ARCH__))
+#if (__CUDA_ARCH__ >= 800 || !defined(__CUDA_ARCH__))
 DINLINE float upcast_s(nv_bfloat16 val) { return __bfloat162float(val); }
 template <>
 DINLINE nv_bfloat16 downcast_s(float val) {
@@ -115,7 +115,7 @@ DINLINE nv_bfloat16& assign_add(nv_bfloat16& a, nv_bfloat16 b) {
   a = __hadd(a, b);
   return a;
 }
-// #endif
+#endif
 
 template <typename T, int N>
 DINLINE array_t<T, N>& packed_assign_add(array_t<T, N>& a, array_t<T, N> b) {
@@ -249,16 +249,12 @@ DINLINE void barrier_at_start(const RankSignals& sg, Signal* self_sg,
   if (threadIdx.x < ngpus) {
     // simultaneously write to the corresponding flag of all ranks.
     // Latency = 1 p2p write
-    // __scoped_atomic_store_n(&sg.signals[threadIdx.x]->start[blockIdx.x][rank],
-    //                         flag, __ATOMIC_RELAXED, __MEMORY_SCOPE_SYSTEM);
-    __atomic_store_n(&sg.signals[threadIdx.x]->start[blockIdx.x][rank], flag,
-      __ATOMIC_RELAXED);
+    __scoped_atomic_store_n(&sg.signals[threadIdx.x]->start[blockIdx.x][rank],
+                            flag, __ATOMIC_RELAXED, __MEMORY_SCOPE_SYSTEM);
     // wait until we got true from all ranks
-    // while (__scoped_atomic_load_n(&self_sg->start[blockIdx.x][threadIdx.x],
-    //                               __ATOMIC_RELAXED,
-    //                               __MEMORY_SCOPE_DEVICE) < flag);
-    while (__atomic_load_n(&self_sg->start[blockIdx.x][threadIdx.x],
-      __ATOMIC_RELAXED) < flag);
+    while (__scoped_atomic_load_n(&self_sg->start[blockIdx.x][threadIdx.x],
+                                  __ATOMIC_RELAXED,
+                                  __MEMORY_SCOPE_DEVICE) < flag);
   }
   __syncthreads();
   // use one thread to update flag
@@ -272,20 +268,15 @@ DINLINE void barrier_at_end(const RankSignals& sg, Signal* self_sg, int rank) {
   if (threadIdx.x < ngpus) {
     // simultaneously write to the corresponding flag of all ranks.
     // Latency = 1 p2p write
-    // __scoped_atomic_store_n(&sg.signals[threadIdx.x]->end[blockIdx.x][rank],
-    //                         flag,
-    //                         final_sync ? __ATOMIC_RELAXED : __ATOMIC_RELEASE,
-    //                         __MEMORY_SCOPE_SYSTEM);
-    __atomic_store_n(&sg.signals[threadIdx.x]->end[blockIdx.x][rank], flag,
-      final_sync ? __ATOMIC_RELAXED : __ATOMIC_RELEASE);
+    __scoped_atomic_store_n(&sg.signals[threadIdx.x]->end[blockIdx.x][rank],
+                            flag,
+                            final_sync ? __ATOMIC_RELAXED : __ATOMIC_RELEASE,
+                            __MEMORY_SCOPE_SYSTEM);
     // wait until we got true from all ranks
-    // while (
-    //     __scoped_atomic_load_n(&self_sg->end[blockIdx.x][threadIdx.x],
-    //                            final_sync ? __ATOMIC_RELAXED : __ATOMIC_ACQUIRE,
-    //                            __MEMORY_SCOPE_DEVICE) < flag);
-    while (__atomic_load_n(&self_sg->end[blockIdx.x][threadIdx.x],
-                final_sync ? __ATOMIC_RELAXED : __ATOMIC_ACQUIRE) <
-    flag);
+    while (
+        __scoped_atomic_load_n(&self_sg->end[blockIdx.x][threadIdx.x],
+                               final_sync ? __ATOMIC_RELAXED : __ATOMIC_ACQUIRE,
+                               __MEMORY_SCOPE_DEVICE) < flag);
   }
   if constexpr (!final_sync) __syncthreads();
   // use one thread to update flag
@@ -374,84 +365,6 @@ __global__ void __launch_bounds__(512, 1)
   }
 }
 
-template <typename T, int ngpus>
-__global__ void __launch_bounds__(512, 1)
-    cross_device_reduce_1stage_pcie(RankData* _dp, RankSignals sg, Signal* self_sg,
-                               T* __restrict__ result, int rank, int size,
-                               uint32_t** curr_hdp_reg, int world_size) {
-
-  using P = typename packed_t<T>::P;
-  using A = typename packed_t<T>::A;
-  // note: we don't reorder the address so the accumulation order is the same
-  // for all ranks, ensuring bitwise identical results
-  auto dp = *_dp;
-  if (threadIdx.x == 1) {
-    for(int i = 0; i < world_size; i++) {
-      __atomic_store_n(curr_hdp_reg[i], 0x1, __ATOMIC_RELAXED);
-    }
-  }
-  barrier_at_start<ngpus>(sg, self_sg, rank);
-  // do the actual reduction
-  for (int idx = blockIdx.x * blockDim.x + threadIdx.x; idx < size;
-       idx += gridDim.x * blockDim.x) {
-    ((P*)result)[idx] = packed_reduce<P, ngpus, A>((const P**)&dp.ptrs[0], idx);
-  }
-  barrier_at_end<ngpus, true>(sg, self_sg, rank);
-}
-
-template <typename T, int ngpus>
-__global__ void __launch_bounds__(512, 1)
-    cross_device_reduce_2stage_pcie(RankData* _dp, RankSignals sg, Signal* self_sg,
-                               T* __restrict__ result, int rank, int size,
-                               uint32_t** curr_hdp_reg, int world_size) {
-  int tid = blockIdx.x * blockDim.x + threadIdx.x;
-  int stride = gridDim.x * blockDim.x;
-  using P = typename packed_t<T>::P;
-  using A = typename packed_t<T>::A;
-  int part = size / ngpus;
-  int start = rank * part;
-  int end = rank == ngpus - 1 ? size : start + part;
-  int largest_part = part + size % ngpus;
-  const P* ptrs[ngpus];
-  P* tmps[ngpus];
-  if (threadIdx.x == 1) {
-    for(int i = 0; i < world_size; i++) {
-      __atomic_store_n(curr_hdp_reg[i], 0x1, __ATOMIC_RELAXED);
-    }
-  }
-#pragma unroll
-  for (int i = 0; i < ngpus; i++) {
-    int target = (rank + i) % ngpus;
-    ptrs[i] = (const P*)_dp->ptrs[target];
-    tmps[i] = get_tmp_buf<P>(sg.signals[target]);
-  }
-  auto tmp_out = tmps[0];
-  barrier_at_start<ngpus>(sg, self_sg, rank);
-
-  // stage 1: reduce scatter
-  for (int idx = start + tid; idx < end; idx += stride) {
-    tmp_out[idx - start] = packed_reduce<P, ngpus, A>(ptrs, idx);
-  }
-  barrier_at_end<ngpus>(sg, self_sg, rank);
-
-  // stage 2: allgather. Note: it's important to match the tid between
-  // the two stages, because visibility across devices is only guaranteed
-  // between threads that have the same tid. If thread i computes the sum of
-  // start + i in the first stage, then thread i also gathers start + i from
-  // all ranks.
-
-  for (int idx = tid; idx < largest_part; idx += stride) {
-#pragma unroll
-    for (int i = 0; i < ngpus; i++) {
-      int gather_from_rank = ((rank + i) % ngpus);
-      if (gather_from_rank == ngpus - 1 || idx < part) {
-        int dst_idx = gather_from_rank * part + idx;
-        ((P*)result)[dst_idx] = tmps[i][idx];
-      }
-    }
-  }
-}
-
 using IPC_KEY = std::array<uint8_t, sizeof(cudaIpcMemHandle_t)>;
 static_assert(sizeof(IPC_KEY) == sizeof(cudaIpcMemHandle_t));
 static_assert(alignof(IPC_KEY) == alignof(cudaIpcMemHandle_t));
@@ -489,8 +402,6 @@ class CustomAllreduce {
   // a map from IPC handles to opened IPC pointers
   std::map<IPC_KEY, char*> ipc_handles_;
 
-  uint32_t** dev_curr_hdp_reg;
-  hipEvent_t stopEvent;
   /**
    * Signals are an array of ipc-enabled buffers from all ranks.
    * For each of the buffer, the layout is as follows:
@@ -513,13 +424,6 @@ class CustomAllreduce {
     for (int i = 0; i < world_size_; i++) {
       sg_.signals[i] = signals[i];
     }
-    if (!fully_connected) {
-      cudaMalloc((void**)&dev_curr_hdp_reg, world_size_ * sizeof(uint32_t*));
-      for (int i = 0; i < world_size_; ++i) {
-        hipDeviceGetAttribute((int*)&dev_curr_hdp_reg[i], hipDeviceAttributeHdpMemFlushCntl, i);
-      }
-    }
-    cudaEventCreate(&stopEvent);
   }
 
   char* open_ipc_handle(const void* ipc_handle) {
@@ -611,88 +515,6 @@ class CustomAllreduce {
     graph_unreg_buffers_.clear();
   }
 
-  template <typename T>
-  void allreduce_pcie(cudaStream_t stream, T* input, T* output, int size,
-                 int threads = 512, int block_limit = defaultBlockLimit) {
-    auto d = packed_t<T>::P::size;
-    if (size % d != 0)
-      throw std::runtime_error(
-          "custom allreduce currently requires input length to be multiple "
-          "of " +
-          std::to_string(d));
-    if (block_limit > kMaxBlocks)
-      throw std::runtime_error("max supported block limit is " +
-                               std::to_string(kMaxBlocks) + ". Got " +
-                               std::to_string(block_limit));
-
-    RankData* ptrs;
-    cudaStreamCaptureStatus status;
-    CUDACHECK(cudaStreamIsCapturing(stream, &status));
-    if (status == cudaStreamCaptureStatusActive) {
-      ptrs = d_rank_data_base_ + graph_unreg_buffers_.size();
-      graph_unreg_buffers_.push_back(input);
-    } else {
-      auto it = buffers_.find(input);
-      if (it == buffers_.end())
-        throw std::runtime_error(
-            "buffer address " +
-            std::to_string(reinterpret_cast<uint64_t>(input)) +
-            " is not registered!");
-      ptrs = it->second;
-    }
-
-    size /= d;
-    auto bytes = size * sizeof(typename packed_t<T>::P);
-    int blocks = std::min(block_limit, (size + threads - 1) / threads);
-// #define KL(ngpus, name)                                                       \
-//   name<T, ngpus><<<blocks, threads, 0, stream>>>(ptrs, sg_, self_sg_, output, \
-//                                                   rank_, size, dev_curr_hdp_reg, world_size_) ;
-
-#define KL(ngpus, name)                                                       \
-  {                                                                           \
-    void* kernelArgs[] = {                                                    \
-      &ptrs, &sg_, &self_sg_, &output, &rank_, &size, &dev_curr_hdp_reg, &world_size_                          \
-    };                                                                        \
-    hipExtLaunchKernel(                                                       \
-      (void*)name<T, ngpus>,                                                  \
-      blocks, threads,                                                        \
-      kernelArgs, 0,                                                          \
-      stream, nullptr, stopEvent, 0                                           \
-    );                                                                        \
-  }
-  
-#define REDUCE_CASE(ngpus)                            \
-  case ngpus: {                                       \
-    if (world_size_ == 2) {                           \
-      KL(ngpus, cross_device_reduce_1stage_pcie);     \
-    } else {                                          \
-      if ((world_size_ <= 4 && bytes < 128 * 8192) || \
-          (world_size_ <= 8 && bytes < 8 * 8192)) {  \
-        KL(ngpus, cross_device_reduce_1stage_pcie);   \
-      } else {                                        \
-        KL(ngpus, cross_device_reduce_2stage_pcie);   \
-      }                                               \
-    }                                                 \
-    break;                                            \
-  }
-
-    switch (world_size_) {
-      REDUCE_CASE(2)
-      REDUCE_CASE(4)
-      REDUCE_CASE(6)
-      REDUCE_CASE(8)
-      REDUCE_CASE(16)
-      default:
-        throw std::runtime_error(
-            "custom allreduce only supports num gpus in (2,4,6,8,16). Actual "
-            "num "
-            "gpus = " +
-            std::to_string(world_size_));
-    }
-#undef REDUCE_CASE
-#undef KL
-  }
-
   /**
    * Performs allreduce, assuming input has already been registered.
    *
@@ -754,22 +576,9 @@ class CustomAllreduce {
       }
     }
 
-// #define KL(ngpus, name)                                                       \
-//   name<T, ngpus><<<blocks, threads, 0, stream>>>(ptrs, sg_, self_sg_, output, \
-//                                                  rank_, size);
 #define KL(ngpus, name)                                                       \
-  {                                                                           \
-    void* kernelArgs[] = {                                                    \
-      &ptrs, &sg_, &self_sg_, &output, &rank_, &size                          \
-    };                                                                        \
-    hipExtLaunchKernel(                                                       \
-      (void*)name<T, ngpus>,                                                  \
-      blocks, threads,                                                        \
-      kernelArgs, 0,                                                          \
-      stream, nullptr, stopEvent, 0                                           \
-    );                                                                        \
-  }
-
+  name<T, ngpus><<<blocks, threads, 0, stream>>>(ptrs, sg_, self_sg_, output, \
+                                                 rank_, size);
 #define REDUCE_CASE(ngpus)                              \
   case ngpus: {                                         \
     if (force_1stage) {                                 \
@@ -811,8 +620,6 @@ class CustomAllreduce {
     for (auto [_, ptr] : ipc_handles_) {
       CUDACHECK(cudaIpcCloseMemHandle(ptr));
     }
-    cudaFree(dev_curr_hdp_reg);
-    cudaEventDestroy(stopEvent);
   }
 };
 

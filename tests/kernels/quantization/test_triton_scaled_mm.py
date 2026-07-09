@@ -4,15 +4,13 @@
 
 Run `pytest tests/kernels/quantization/test_triton_scaled_mm.py`.
 """
-import os
+
 import importlib
 
 import pytest
 import torch
 
 from vllm.platforms import current_platform
-
-from ...utils import models_path_prefix
 from vllm.utils.torch_utils import set_random_seed
 
 device = "cuda"
@@ -52,7 +50,7 @@ def get_8bit_types():
 @pytest.mark.parametrize(
     "model_path",
     [
-        os.path.join(models_path_prefix, "neuralmagic/Llama-3.2-1B-quantized.w8a8"),
+        "neuralmagic/Llama-3.2-1B-quantized.w8a8",
     ],
 )
 @pytest.mark.parametrize("max_tokens", [32])

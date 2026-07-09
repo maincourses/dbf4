@@ -4,16 +4,16 @@
 from collections.abc import Callable
 
 import pytest
-import os
 
 from tests.models.registry import HF_EXAMPLE_MODELS
 from tests.utils import multi_gpu_test
+from vllm import LLM
 from vllm.engine.arg_utils import EngineArgs
+from vllm.platforms import current_platform
 from vllm.sampling_params import SamplingParams
 from vllm.v1.cudagraph_dispatcher import CudagraphDispatcher
 
 from ...utils import check_logprobs_close, check_outputs_equal
-from ....utils import models_path_prefix
 
 # Mark all tests as hybrid
 pytestmark = pytest.mark.hybrid_model
@@ -25,34 +25,33 @@ pytestmark = pytest.mark.hybrid_model
 APC_MULTIPLY_BY = 300
 
 SSM_MODELS = [
-    os.path.join(models_path_prefix, "state-spaces/mamba-130m-hf"),
-    os.path.join(models_path_prefix, "tiiuae/falcon-mamba-tiny-dev"),
+    "state-spaces/mamba-130m-hf",
+    "tiiuae/falcon-mamba-tiny-dev",
     # mamba2-codestral in transformers is broken pending:
     # https://github.com/huggingface/transformers/pull/40861
     # "yujiepan/mamba2-codestral-v0.1-tiny-random",
 ]
 
 HYBRID_MODELS = [
-    os.path.join(models_path_prefix, "ai21labs/Jamba-tiny-dev"),
-    os.path.join(models_path_prefix, "pfnet/plamo-2-1b"),
-    os.path.join(models_path_prefix, "Zyphra/Zamba2-1.2B-instruct"),
-    os.path.join(models_path_prefix, "hmellor/tiny-random-BambaForCausalLM"),
-    os.path.join(models_path_prefix, "ibm-granite/granite-4.0-tiny-preview"),
-    os.path.join(models_path_prefix, "tiiuae/Falcon-H1-0.5B-Base"),
-    os.path.join(models_path_prefix, "LiquidAI/LFM2-1.2B"),
-    os.path.join(models_path_prefix, "tiny-random/qwen3-next-moe"),
+    "ai21labs/Jamba-tiny-dev",
+    "pfnet/plamo-2-1b",
+    "Zyphra/Zamba2-1.2B-instruct",
+    "hmellor/tiny-random-BambaForCausalLM",
+    "ibm-granite/granite-4.0-tiny-preview",
+    "tiiuae/Falcon-H1-0.5B-Base",
+    "LiquidAI/LFM2-1.2B",
+    "tiny-random/qwen3-next-moe",
 ]
 
 FULL_CUDA_GRAPH_MODELS = [
-    os.path.join(models_path_prefix, "ai21labs/Jamba-tiny-dev"),
-    os.path.join(models_path_prefix, "pfnet/plamo-2-1b"),
-    os.path.join(models_path_prefix, "Zyphra/Zamba2-1.2B-instruct"),
+    "ai21labs/Jamba-tiny-dev",
+    "pfnet/plamo-2-1b",
+    "Zyphra/Zamba2-1.2B-instruct",
 ]
 
-
 FP32_STATE_MODELS = [
-    os.path.join(models_path_prefix, "state-spaces/mamba-130m-hf"),
-    os.path.join(models_path_prefix, "Zyphra/Zamba2-1.2B-instruct"),
+    "state-spaces/mamba-130m-hf",
+    "Zyphra/Zamba2-1.2B-instruct",
 ]
 
 # Avoid OOM
@@ -508,7 +507,8 @@ def test_apc_single_prompt_block_align_alignment(
     vllm_runner_kwargs["enable_prefix_caching"] = True
     with vllm_runner(**vllm_runner_kwargs) as vllm_model:
         # Retrieve the default mamba state block size
-        mamba_block_size = vllm_model.llm.llm_engine.cache_config.mamba_block_size
+        vllm_config = vllm_model.llm.llm_engine.vllm_config
+        mamba_block_size = vllm_config.cache_config.mamba_block_size
 
     # In case the hybrid model does not have the
     # "mamba_block_size" assume a fixed constant
@@ -580,6 +580,10 @@ def test_apc_multiple_prompts_all_cached_outputs(
         model, max_model_len, tensor_parallel_size=tensor_parallel_size
     )
     vllm_runner_kwargs["mamba_ssm_cache_dtype"] = "float32"
+    # Reduce the effects of batch variance on ROCm since batch invariance is not
+    # yet supported. See: https://github.com/vllm-project/vllm/issues/27433
+    if current_platform.is_rocm():
+        vllm_runner_kwargs["max_num_seqs"] = 4
 
     vllm_outputs_no_cache, _ = _get_vLLM_output(
         vllm_runner, vllm_runner_kwargs, generated_prompts, max_tokens, num_logprobs
@@ -657,7 +661,8 @@ def test_apc_multiple_prompts_block_align_alignment(
     vllm_runner_kwargs["enable_prefix_caching"] = True
     with vllm_runner(**vllm_runner_kwargs) as vllm_model:
         # Retrieve the default mamba state block size
-        mamba_block_size = vllm_model.llm.llm_engine.cache_config.mamba_block_size
+        vllm_config = vllm_model.llm.llm_engine.vllm_config
+        mamba_block_size = vllm_config.cache_config.mamba_block_size
 
     # In case the hybrid model does not have the
     # "mamba_block_size" assume a fixed constant
@@ -767,3 +772,30 @@ def test_apc_multiple_prompts_partial_cached_outputs(
             name_0="vllm_no_cache",
             name_1=f"vllm_cache_it_{r_idx + 1}",
         )
+
+
+# we have to use a real large model to get reasonable results
+# the model can't be a hybrid model as we need block_size 16
+@pytest.mark.parametrize("model", ["tiiuae/falcon-mamba-7b"])
+def test_apc_common_prefix_same_batch(
+    model: str,
+    monkeypatch,
+) -> None:
+    # Required to put the two requests in the same batch
+    monkeypatch.setenv("VLLM_ENABLE_V1_MULTIPROCESSING", "0")
+    llm = LLM(
+        model=model,
+        enforce_eager=True,
+        block_size=16,
+        mamba_block_size=16,
+        enable_prefix_caching=True,
+        seed=42,
+    )
+    prompts = [
+        "hello what is one plus one what is one plus one what is one plus one the answer is",  # noqa: E501
+        "hello what is one plus one what is one plus one what is one plus one the answer is",  # noqa: E501
+    ]
+    sampling_params = SamplingParams(temperature=0.8, top_p=0.95, max_tokens=20)
+    outputs = llm.generate(prompts, sampling_params)
+    for output in outputs:
+        assert "two" in output.outputs[0].text

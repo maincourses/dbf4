@@ -3,7 +3,6 @@
 
 from typing import Any, TypedDict
 
-import os
 import numpy.typing as npt
 import pytest
 import torch
@@ -20,7 +19,6 @@ from ....conftest import (
     VllmRunner,
 )
 from ...utils import check_logprobs_close
-from ....utils import models_path_prefix
 
 
 @pytest.fixture(scope="function", autouse=True)
@@ -29,7 +27,7 @@ def enable_pickle(monkeypatch):
     monkeypatch.setenv("VLLM_ALLOW_INSECURE_SERIALIZATION", "1")
 
 
-models = [os.path.join(models_path_prefix, "Qwen/Qwen2-VL-2B-Instruct")]
+models = ["Qwen/Qwen2-VL-2B-Instruct"]
 target_dtype = "half"
 
 IMAGE_PLACEHOLDER = "<|vision_start|><|image_pad|><|vision_end|>"
@@ -200,10 +198,10 @@ def batch_make_video_embeddings(
         videos += video_batch
 
     # video to pixel values
-    image_processor = processor.image_processor
+    video_processor = processor.video_processor
 
-    preprocess_result = image_processor.preprocess(
-        images=None, videos=videos, return_tensors="pt"
+    preprocess_result = video_processor.preprocess(
+        videos=videos, return_tensors="pt"
     ).data
     pixel_values = preprocess_result["pixel_values_videos"]
     video_grid_thw = preprocess_result["video_grid_thw"]
@@ -224,7 +222,7 @@ def batch_make_video_embeddings(
     embed_counter = 0
     for video_batch in video_batches_:
         cur_batch_video_count = len(video_batch)
-        merge_size = image_processor.merge_size
+        merge_size = video_processor.merge_size
         cur_batch_embed_len = sum(
             grid_thw.prod(-1) // merge_size // merge_size
             for grid_thw in video_grid_thw[
@@ -377,7 +375,6 @@ def test_qwen2_vl_image_embeddings_input(
 @pytest.mark.parametrize(
     "size_factors",
     [
-        [],
         # Single-scale
         [0.5],
         # Single-scale, batched

@@ -1,11 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
-from typing import Any, Optional
+from typing import Any
 
 import torch
-import os
+
 from vllm.distributed import get_tensor_model_parallel_rank, get_tp_group
+from vllm.model_executor.layers.fused_moe.activation import MoEActivation
 from vllm.model_executor.layers.fused_moe.config import (
     FusedMoEQuantConfig,
     int4_w4a16_moe_quant_config,
@@ -31,16 +32,7 @@ from vllm.model_executor.layers.quantization.utils.marlin_utils import (
 )
 from vllm.model_executor.utils import set_weight_attrs
 from vllm.platforms import current_platform
-from vllm.model_executor.layers.fused_moe import fused_experts
 
-from vllm.model_executor.layers.quantization.awq import (
-                                                         is_layer_skipped_awq)
-from lmslim.layers.fused_moe.fuse_moe_int4 import fused_experts_w4a16
-
-os.environ['W4A16_MOE_CUDA'] = os.environ.get('W4A16_MOE_CUDA', '0')
-os.environ['W4A16_MOE_LMSLIM'] = os.environ.get('W4A16_MOE_LMSLIM', '1')
-if os.environ['W4A16_MOE_CUDA'] == '1':
-    from vllm.model_executor.layers.quantization.utils.fused_moe_cuda  import fused_experts_cuda
 
 class MoeWNA16Config(QuantizationConfig):
     """Config class for MOE WNA16 (W8A16/W4A16) quantization."""
@@ -172,7 +164,7 @@ class MoeWNA16Config(QuantizationConfig):
 
     def get_quant_method(
         self, layer: torch.nn.Module, prefix: str
-    ) -> Optional["QuantizeMethodBase"]:
+    ) -> "QuantizeMethodBase | None":
         if is_layer_skipped_quant(prefix, self.modules_to_not_convert):
             if isinstance(layer, FusedMoE):
                 return UnquantizedFusedMoEMethod(layer.moe_config)
@@ -211,9 +203,6 @@ class MoeWNA16Config(QuantizationConfig):
             else:
                 raise ValueError("moe_wna16 only support gptq and awq.")
         elif isinstance(layer, FusedMoE):
-            if is_layer_skipped_awq(
-                    prefix, getattr(self, "modules_to_not_convert", [])):
-                return UnquantizedFusedMoEMethod(layer.moe_config)  
             return MoeWNA16Method(self, layer.moe_config)
         return None
 
@@ -379,26 +368,25 @@ class MoeWNA16Method(FusedMoEMethodBase):
         x: torch.Tensor,
         topk_weights: torch.Tensor,
         topk_ids: torch.Tensor,
-        use_nn_moe: bool | None = False,
-        use_fused_gate: bool | None = False,
-        **_
+        shared_experts_input: torch.Tensor | None,
     ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         from vllm.model_executor.layers.fused_moe import fused_experts
 
-        assert layer.activation == "silu", "Only SiLU activation is supported."
-        
+        assert layer.activation == MoEActivation.SILU, (
+            f"Only SiLU activation is supported, not {layer.activation}."
+        )
+
         return fused_experts(
             x,
             layer.w13_qweight,
             layer.w2_qweight,
             topk_weights=topk_weights,
             topk_ids=topk_ids,
-            inplace=True,
+            inplace=not self.moe.disable_inplace,
             apply_router_weight_on_input=layer.apply_router_weight_on_input,
             global_num_experts=layer.global_num_experts,
             expert_map=layer.expert_map,
             quant_config=self.moe_quant_config,
-            use_nn_moe=False,
         )
 
     @staticmethod

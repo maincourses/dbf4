@@ -1,12 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
-import os
 import pytest
 from transformers import AutoTokenizer
 
 from tests.reasoning.utils import DeltaMessage, run_reasoning_extraction
 from vllm.reasoning import ReasoningParser, ReasoningParserManager
-from ..utils import models_path_prefix
 
 parser_name = "granite"
 START_REASONING = "Here is my thought process:"
@@ -122,7 +120,7 @@ TEST_CASES = [
 ]
 
 # Global tokenizer initialization to avoid repeated loading
-tokenizer = AutoTokenizer.from_pretrained(os.path.join(models_path_prefix, "facebook/opt-125m"))
+tokenizer = AutoTokenizer.from_pretrained("facebook/opt-125m")
 
 
 @pytest.mark.parametrize("streaming, param_dict", TEST_CASES)

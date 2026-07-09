@@ -16,8 +16,10 @@ from vllm.model_executor.layers.quantization.utils.int8_utils import (
 from vllm.model_executor.layers.quantization.utils.quant_utils import GroupShape
 from vllm.platforms import current_platform
 from vllm.scalar_type import ScalarType, scalar_types
+from vllm.utils.platform_utils import num_compute_units
+
 from .quant_utils import pack_cols, unpack_cols
-  
+
 logger = init_logger(__name__)
 
 GPTQ_MARLIN_TILE = 16
@@ -207,7 +209,6 @@ def check_marlin_supports_shape(
     return True, None
 
 
-#暂不支持marlinlinear
 def check_marlin_supports_layer(layer: LinearBase, group_size: int) -> bool:
     if current_platform.is_rocm():
         return False
@@ -218,25 +219,22 @@ def check_marlin_supports_layer(layer: LinearBase, group_size: int) -> bool:
         getattr(layer, "input_size_per_partition", None) or layer.input_size
     )
 
-    # return check_marlin_supports_shape(
-    #     output_size_per_partition=output_size_per_partition,
-    #     input_size_per_partition=input_size_per_partition,
-    #     input_size=layer.input_size,
-    #     group_size=group_size,
-    # )[0]
-    return False
+    return check_marlin_supports_shape(
+        output_size_per_partition=output_size_per_partition,
+        input_size_per_partition=input_size_per_partition,
+        input_size=layer.input_size,
+        group_size=group_size,
+    )[0]
+
 
 def check_moe_marlin_supports_layer(layer: LinearBase, group_size: int) -> bool:
-    # if current_platform.is_rocm():
-    #     return False
+    if current_platform.is_rocm():
+        return False
     hidden_size = layer.hidden_size
     intermediate_size_per_partition = layer.intermediate_size_per_partition
     # apply_router_weight_on_input is not supported for moe marlin
     supports_router_weight = not layer.apply_router_weight_on_input
 
-    #暂时只支持bw
-    device_name = torch.cuda.get_device_properties(torch.cuda.current_device()).name
-    supports_device = "BW" in device_name
     # gate-up: (n, k) = (intermediate_size_per_partition * 2, hidden_size)
     # down: (n, k) = (hidden_size, intermediate_size_per_partition)
     # moe marlin requires n % 128 == 0 and k % 64 == 0
@@ -244,8 +242,7 @@ def check_moe_marlin_supports_layer(layer: LinearBase, group_size: int) -> bool:
         hidden_size % 128 == 0
         and intermediate_size_per_partition % max(64, group_size) == 0
     )
-
-    supports_group_size = group_size in [64] #暂时只支持64
+    supports_group_size = group_size in [-1, 32, 64, 128]
     return supports_shape and supports_group_size and supports_router_weight
 
 
@@ -258,24 +255,12 @@ def marlin_moe_intermediate_size(w1_packed: torch.Tensor, w2_packed: torch.Tenso
     return w2_packed.size(1) * marlin_tile_size
 
 
-def marlin_make_workspace(
-    output_size_per_partition: int, device: torch.device
-) -> torch.Tensor:
-    max_workspace_size = (
-        output_size_per_partition // GPTQ_MARLIN_MIN_THREAD_N
-    ) * GPTQ_MARLIN_MAX_PARALLEL
-
-    return torch.zeros(
-        max_workspace_size, dtype=torch.int, device=device, requires_grad=False
-    )
-
-
 def marlin_make_workspace_new(
     device: torch.device, max_blocks_per_sm: int = 1
 ) -> torch.Tensor:
     # In the new marlin kernel, we use the num of threadblocks as workspace
     # size. The num of threadblocks is sms_count * max_blocks_per_sm.
-    sms = torch.cuda.get_device_properties(device).multi_processor_count
+    sms = num_compute_units(device.index)
     return torch.zeros(
         sms * max_blocks_per_sm, dtype=torch.int, device=device, requires_grad=False
     )
@@ -300,59 +285,37 @@ def marlin_make_empty_g_idx(device: torch.device) -> torch.Tensor:
     )
 
 
-def marlin_make_empty_zp(device: torch.device) -> torch.Tensor:
-    return torch.nn.Parameter(
-        torch.empty(0, dtype=torch.int, device=device), requires_grad=False
-    )
-
-
 def marlin_sort_g_idx(g_idx: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     g_idx_sort_indices = torch.argsort(g_idx).to(torch.int)
     return g_idx[g_idx_sort_indices], g_idx_sort_indices
 
 
-# def get_scale_perms():
-#     scale_perm: list[int] = []
-#     for i in range(8):
-#         scale_perm.extend([i + 8 * j for j in range(8)])
-#     scale_perm_single: list[int] = []
-#     for i in range(4):
-#         scale_perm_single.extend(
-#             [2 * i + j for j in [0, 1, 8, 9, 16, 17, 24, 25]])
-#     return scale_perm, scale_perm_single
-
-
-# def marlin_permute_scales(s: torch.Tensor, size_k: int, size_n: int,
-#                           group_size: int) -> torch.Tensor:
-
-#     scale_perm, scale_perm_single = get_scale_perms()
-#     if group_size < size_k and group_size != -1:
-#         s = s.reshape((-1, len(scale_perm)))[:, scale_perm]
-#     else:
-#         s = s.reshape((-1, len(scale_perm_single)))[:, scale_perm_single]
-#     s = s.reshape((-1, size_n)).contiguous()
-
-#     return s
 def get_scale_perms():
     scale_perm: list[int] = []
-    for i in range(16): # 遍历列方向不同scale的 8个线程
-        scale_perm.extend([i + 16 * j for j in range(8)]) # 插入 8 个数据块中 对应位置的索引
-    return scale_perm
+    for i in range(8):
+        scale_perm.extend([i + 8 * j for j in range(8)])
+    scale_perm_single: list[int] = []
+    for i in range(4):
+        scale_perm_single.extend([2 * i + j for j in [0, 1, 8, 9, 16, 17, 24, 25]])
+    return scale_perm, scale_perm_single
 
 
 def marlin_permute_scales(
-    s: torch.Tensor, size_k: int, size_n: int, group_size: int, is_a_8bit: bool = False # [56, 512]  7168  512  128
+    s: torch.Tensor, size_k: int, size_n: int, group_size: int, is_a_8bit: bool = False
 ) -> torch.Tensor:
-    # 将[128, 128](fp16) B矩阵中 每个[16, 16]计算块中的对应位置的 zero值 放到一起 
-    scale_perm = get_scale_perms()
-    s = s.reshape((-1, len(scale_perm)))[:, scale_perm]
+    scale_perm, scale_perm_single = get_scale_perms()
+    if group_size < size_k and group_size != -1 and not is_a_8bit:
+        s = s.reshape((-1, len(scale_perm)))[:, scale_perm]
+    else:
+        s = s.reshape((-1, len(scale_perm_single)))[:, scale_perm_single]
     s = s.reshape((-1, size_n)).contiguous()
+
     return s
 
 
 def marlin_permute_bias(s: torch.Tensor) -> torch.Tensor:
     origin_shape = s.shape
-    scale_perm_single = get_scale_perms()
+    _, scale_perm_single = get_scale_perms()
     s = s.reshape((-1, len(scale_perm_single)))[:, scale_perm_single]
     return s.reshape(*origin_shape).contiguous()
 
@@ -384,11 +347,10 @@ def marlin_zero_points(
 ) -> torch.Tensor:
     # Permute zero-points in a similar way to scales, but do not use the
     # "single" permutation, since zero-points are applied on every MMA
-    # 和 scale 使用一致的重排逻辑，将[128, 128](fp16) B矩阵中 每个[16, 16]计算块中的对应位置的 zero值 放到一起 
-    scale_perm = get_scale_perms()
+    scale_perm, _ = get_scale_perms()
     zp = zp.reshape((-1, len(scale_perm)))[:, scale_perm]
 
-    # uint4 混排
+    # Interleave column dim (for the dequantize code) and pack it to int32
     if num_bits == 4:
         interleave = numpy.array([0, 2, 4, 6, 1, 3, 5, 7])
     elif num_bits == 8:
@@ -397,7 +359,6 @@ def marlin_zero_points(
         raise Exception("num_bits must be 4 or 8, got {}".format(num_bits))
 
     if not is_a_8bit:
-        # uint4打包成 int32
         zp = zp.reshape((-1, len(interleave)))[:, interleave].ravel()
     zp = zp.reshape((-1, size_n)).contiguous()
     zp = pack_cols(zp, num_bits, size_k, size_n)
@@ -672,87 +633,3 @@ def apply_awq_marlin_linear(
     )
 
     return output.reshape(out_shape)
-
-
-def merge_scales_zeros(marlin_s: torch.Tensor, marlin_zp: torch.Tensor,
-                                    data_num_0: int, data_num_1: int) -> torch.Tensor:                           
-    """
-    合并两个 Tensor, 每行交替取 data_num_0 个 float16 和 data_num_1 个 int32。
-    要求：
-      - marlin_s 每行长度能被 data_num_0 整除
-      - marlin_zp 每行长度能被 data_num_1 整除
-      - 合并后的总字节数必为 4 的倍数
-
-    返回:
-        [N, M] 的 int32 Tensor(行数一致，列数已对齐)
-    """
-    assert marlin_s.shape[0] == marlin_zp.shape[0], "Batch size mismatch"
-    assert marlin_s.dtype == torch.float16
-    assert marlin_zp.dtype == torch.int32
-
-    N, D0 = marlin_s.shape
-    _, D1 = marlin_zp.shape
-
-    assert D0 % data_num_0 == 0, "marlin_s 每行必须能被 data_num_0 整除"
-    assert D1 % data_num_1 == 0, "marlin_zp 每行必须能被 data_num_1 整除"
-
-    s_block_count = D0 // data_num_0
-    zp_block_count = D1 // data_num_1
-    assert s_block_count == zp_block_count
-
-    total_blocks = s_block_count
-
-    # 转为字节视图
-    s_bytes = marlin_s.view(torch.uint8).reshape(N, -1)
-    zp_bytes = marlin_zp.view(torch.uint8).reshape(N, -1)
-
-    # 每行的合并结果
-    merged_rows = []
-
-    for i in range(N):
-        s_row = s_bytes[i]
-        zp_row = zp_bytes[i]
-        s_ptr = 0
-        zp_ptr = 0
-        merged = []
-
-        for _ in range(total_blocks):
-            # 如果 s 还有剩余 block，就取
-            if s_ptr < s_row.numel():
-                chunk_s = s_row[s_ptr: s_ptr + data_num_0 * 2]  # float16 = 2 字节
-                merged.append(chunk_s)
-                s_ptr += data_num_0 * 2
-
-            # 如果 zp 还有剩余 block，就取
-            if zp_ptr < zp_row.numel():
-                chunk_zp = zp_row[zp_ptr: zp_ptr + data_num_1 * 4]  # int32 = 4 字节
-                merged.append(chunk_zp)
-                zp_ptr += data_num_1 * 4
-
-        # 合并所有字节，并直接转换为 int32
-        merged_bytes = torch.cat(merged)
-        # assert merged_bytes.numel() % 4 == 0, "最终字节长度必须是4的倍数"
-        merged_int32 = merged_bytes.view(torch.int32)
-        merged_rows.append(merged_int32)
-
-    # 所有合并行长度一致，可以直接堆叠
-    result = torch.stack(merged_rows)
-    return result
-
-def awq_marlin_moe_permute_sz(
-            s : torch.Tensor,
-            z : torch.Tensor,
-            size_k: int,
-            size_n: int,
-            ) -> torch.Tensor:
-    num_experts = s.shape[0]
-    
-    # output = torch.empty((num_experts, size_k // 16, size_n//2 + size_n//8),
-    #                     device=z.device,
-    #                     dtype=z.dtype)
-
-    outputs = []
-    for e in range(num_experts):
-        out_sz = merge_scales_zeros(s[e], z[e], 128, 16)
-        outputs.append(out_sz)
-    return torch.stack(outputs, dim=0)

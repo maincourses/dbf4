@@ -16,12 +16,6 @@ void reshape_and_cache(torch::Tensor& key, torch::Tensor& value,
                        const std::string& kv_cache_dtype,
                        torch::Tensor& k_scale, torch::Tensor& v_scale);
 
-void reshape_and_cache_cuda(torch::Tensor& key, torch::Tensor& value,
-                            torch::Tensor& key_cache, torch::Tensor& value_cache,
-                            torch::Tensor& slot_mapping,
-                            const std::string& kv_cache_dtype,
-                            torch::Tensor& k_scale, torch::Tensor& v_scale); 
-
 void reshape_and_cache_flash(torch::Tensor& key, torch::Tensor& value,
                              torch::Tensor& key_cache,
                              torch::Tensor& value_cache,
@@ -35,16 +29,15 @@ void concat_and_cache_mla(torch::Tensor& kv_c, torch::Tensor& k_pe,
                           torch::Tensor& scale);
 
 // NOTE: k_pe and kv_c order is flipped compared to concat_and_cache_mla
-// void concat_and_cache_mla_rope_fused(
-//     torch::Tensor& positions, torch::Tensor& q_pe, torch::Tensor& k_pe,
-//     torch::Tensor& kv_c, torch::Tensor& rope_cos_sin_cache, bool rope_is_neox,
-//     torch::Tensor& kv_cache_slot_mapping, torch::Tensor& kv_cache,
-//     const std::string& kv_cache_dtype, torch::Tensor& kv_cache_quant_scale);
+void concat_and_cache_mla_rope_fused(
+    torch::Tensor& positions, torch::Tensor& q_pe, torch::Tensor& k_pe,
+    torch::Tensor& kv_c, torch::Tensor& rope_cos_sin_cache, bool rope_is_neox,
+    torch::Tensor& kv_cache_slot_mapping, torch::Tensor& kv_cache,
+    const std::string& kv_cache_dtype, torch::Tensor& kv_cache_quant_scale);
 
 // Just for unittest
 void convert_fp8(torch::Tensor& dst_cache, torch::Tensor& src_cache,
                  const double scale, const std::string& kv_cache_dtype);
-
 
 void gather_and_maybe_dequant_cache(
     torch::Tensor const& src_cache,     // [NUM_BLOCKS, BLOCK_SIZE, ENTRIES...]
@@ -81,6 +74,11 @@ void indexer_k_quant_and_cache(
     int64_t quant_block_size,     // quantization block size
     const std::string& scale_fmt);
 
+// Concatenate query nope and rope for MLA/DSA attention
+void concat_mla_q(
+    torch::Tensor& ql_nope,  // [num_tokens, num_heads, nope_dim]
+    torch::Tensor& q_pe,     // [num_tokens, num_heads, rope_dim]
+    torch::Tensor& q_out);   // [num_tokens, num_heads, nope_dim + rope_dim]
 
 // Extract function to gather quantized K cache
 void cp_gather_indexer_k_quant_cache(

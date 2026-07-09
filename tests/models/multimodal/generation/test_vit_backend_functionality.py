@@ -7,7 +7,6 @@ This test validates that each multimodal model can successfully generate outputs
 using different ViT attention backends. Tests are parametrized by model and backend.
 """
 
-import os
 from dataclasses import asdict
 from typing import Any
 
@@ -20,7 +19,7 @@ from vllm.multimodal.video import sample_frames_from_video
 from vllm.platforms import current_platform
 from vllm.v1.attention.backends.registry import AttentionBackendEnum
 
-from ....utils import create_new_process_for_each_test, models_path_prefix
+from ....utils import create_new_process_for_each_test
 from ...utils import dummy_hf_overrides
 
 # Dots.OCR prompt from official repository
@@ -51,7 +50,7 @@ VIDEO_PLACEHOLDER = "<|vision_start|><|video_pad|><|vision_end|>"
 # Model configurations
 MODEL_CONFIGS: dict[str, dict[str, Any]] = {
     "dots_ocr": {
-        "model_name": os.path.join(models_path_prefix, "rednote-hilab/dots.ocr"),
+        "model_name": "rednote-hilab/dots.ocr",
         "interface": "llm_chat",
         "max_model_len": 32768,
         "max_num_seqs": 1,
@@ -67,7 +66,7 @@ MODEL_CONFIGS: dict[str, dict[str, Any]] = {
         "output_validator": lambda x: len(x) > 10 and "stop" in x.lower(),
     },
     "ernie45_vl": {
-        "model_name": os.path.join(models_path_prefix, "baidu/ERNIE-4.5-VL-28B-A3B-PT"),
+        "model_name": "baidu/ERNIE-4.5-VL-28B-A3B-PT",
         "interface": "llm_generate",
         "max_model_len": 16384,
         "max_num_seqs": 2,
@@ -80,7 +79,7 @@ MODEL_CONFIGS: dict[str, dict[str, Any]] = {
         "question": "What is the content of each image?",
     },
     "glm4_1v": {
-        "model_name": os.path.join(models_path_prefix, "zai-org/GLM-4.1V-9B-Thinking"),
+        "model_name": "zai-org/GLM-4.1V-9B-Thinking",
         "interface": "llm_generate",
         "max_model_len": 32768,
         "max_num_seqs": 2,
@@ -92,8 +91,21 @@ MODEL_CONFIGS: dict[str, dict[str, Any]] = {
         "use_processor": True,
         "question": "What is the content of each image?",
     },
+    "glm_ocr": {
+        "model_name": "zai-org/GLM-OCR",
+        "interface": "llm_generate",
+        "max_model_len": 131072,
+        "max_num_seqs": 2,
+        "sampling_params": {
+            "temperature": 0.0,
+            "max_tokens": 256,
+            "stop_token_ids": None,
+        },
+        "use_processor": True,
+        "question": "Text Recognition:",
+    },
     "keye_vl": {
-        "model_name": os.path.join(models_path_prefix, "Kwai-Keye/Keye-VL-8B-Preview"),
+        "model_name": "Kwai-Keye/Keye-VL-8B-Preview",
         "interface": "llm_generate",
         "max_model_len": 8192,
         "max_num_seqs": 5,
@@ -110,7 +122,7 @@ MODEL_CONFIGS: dict[str, dict[str, Any]] = {
         "question": "What is the content of each image?",
     },
     "ovis2_5": {
-        "model_name": os.path.join(models_path_prefix, "AIDC-AI/Ovis2.5-2B"),
+        "model_name": "AIDC-AI/Ovis2.5-2B",
         "interface": "llm_generate",
         "max_model_len": 8192,
         "max_num_seqs": 2,
@@ -123,7 +135,7 @@ MODEL_CONFIGS: dict[str, dict[str, Any]] = {
         "question": "What is the content of each image?",
     },
     "qwen2_5_vl": {
-        "model_name": os.path.join(models_path_prefix, "Qwen/Qwen2.5-VL-3B-Instruct"),
+        "model_name": "Qwen/Qwen2.5-VL-3B-Instruct",
         "interface": "vllm_runner",
         "media_type": "video",
         "max_model_len": 4000,
@@ -142,7 +154,7 @@ MODEL_CONFIGS: dict[str, dict[str, Any]] = {
         },
     },
     "qwen2_5_omni": {
-        "model_name": os.path.join(models_path_prefix, "Qwen/Qwen2.5-Omni-3B"),
+        "model_name": "Qwen/Qwen2.5-Omni-3B",
         "interface": "llm_generate",
         "max_model_len": 32768,
         "max_num_seqs": 2,
@@ -157,7 +169,7 @@ MODEL_CONFIGS: dict[str, dict[str, Any]] = {
         "question": "What is the content of each image?",
     },
     "qwen3_omni": {
-        "model_name": os.path.join(models_path_prefix, "Qwen/Qwen3-Omni-30B-A3B-Instruct"),
+        "model_name": "Qwen/Qwen3-Omni-30B-A3B-Instruct",
         "interface": "llm_generate",
         "max_model_len": 32768,
         "max_num_seqs": 2,

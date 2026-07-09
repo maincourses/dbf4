@@ -1,18 +1,16 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
-import os
 import pytest
 
 import vllm
 from vllm.assets.image import ImageAsset
 from vllm.lora.request import LoRARequest
 from vllm.platforms import current_platform
-from ..utils import models_path_prefix
 
 from ..utils import multi_gpu_test
 
-MODEL_PATH = os.path.join(models_path_prefix, "openbmb/MiniCPM-Llama3-V-2_5")
+MODEL_PATH = "openbmb/MiniCPM-Llama3-V-2_5"
 
 PROMPT_TEMPLATE = (
     "<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\n"

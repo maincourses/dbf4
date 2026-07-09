@@ -28,13 +28,10 @@ from collections.abc import Callable, Iterable
 from itertools import islice
 from typing import Any
 
-import os
-import re
 import torch
 import torch.nn.functional as F
 from torch import nn
 
-from vllm.attention.layer import Attention
 from vllm.compilation.decorators import support_torch_compile
 from vllm.config import CacheConfig, VllmConfig, get_current_vllm_config
 from vllm.distributed import (
@@ -45,20 +42,8 @@ from vllm.distributed import (
 )
 from vllm.logger import init_logger
 from vllm.model_executor.layers.activation import SiluAndMul
+from vllm.model_executor.layers.attention import Attention
 from vllm.model_executor.layers.fused_moe import SharedFusedMoE
-try:
-    from vllm.model_executor.layers.fused_moe.router_capture import (
-        maybe_record_router_logits,
-    )
-except ImportError:
-
-    def maybe_record_router_logits(
-        *,
-        layer_name: str,
-        router_logits: torch.Tensor,
-        top_k: int,
-    ) -> None:
-        return None
 from vllm.model_executor.layers.layernorm import RMSNorm
 from vllm.model_executor.layers.linear import (
     MergedColumnParallelLinear,
@@ -80,7 +65,14 @@ from vllm.model_executor.model_loader.weight_utils import (
 from vllm.model_executor.models.utils import sequence_parallel_chunk
 from vllm.sequence import IntermediateTensors
 
-from .interfaces import MixtureOfExperts, SupportsEagle3, SupportsLoRA, SupportsPP
+from .interfaces import (
+    EagleModelMixin,
+    MixtureOfExperts,
+    SupportsEagle,
+    SupportsEagle3,
+    SupportsLoRA,
+    SupportsPP,
+)
 from .utils import (
     AutoWeightsLoader,
     PPMissingLayer,
@@ -91,11 +83,6 @@ from .utils import (
     maybe_prefix,
 )
 
-from vllm import envs
-from vllm import _custom_ops as ops
-from vllm.model_executor.utils import pad_weight, gemm_bank_conf
-from vllm.utils import W8a8GetCacheJSON
-from vllm.utils.torch_utils import direct_register_custom_op
 logger = init_logger(__name__)
 
 
@@ -164,8 +151,6 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
         self.n_routed_experts = config.num_experts
 
         self.is_sequence_parallel = parallel_config.use_sequence_parallel_moe
-        self._router_top_k = int(config.num_experts_per_tok)
-        self._router_capture_layer_name = prefix
 
         if self.tp_size > config.num_experts:
             raise ValueError(
@@ -249,14 +234,6 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
 
         # router_logits: (num_tokens, n_experts)
         router_logits, _ = self.gate(hidden_states)
-        if not (hasattr(torch, "compiler") and torch.compiler.is_compiling()):
-            capture_enabled = envs.VLLM_MOE_ROUTER_CAPTURE
-            if capture_enabled:
-                maybe_record_router_logits(
-                    layer_name=self._router_capture_layer_name,
-                    router_logits=router_logits,
-                    top_k=self._router_top_k,
-                )
         shared_out, fused_out = self.experts(
             hidden_states=hidden_states, router_logits=router_logits
         )
@@ -368,92 +345,20 @@ class Qwen3MoeAttention(nn.Module):
         qkv, _ = self.qkv_proj(hidden_states)
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
         # Add qk-norm
-        if envs.VLLM_USE_FUSED_RMS_ROPE and positions.ndim == 1:
-            # Fused RMSNorm + RoPE path through custom op.
-            cos_sin_cache = self.rotary_emb.cos_sin_cache
-            if (cos_sin_cache.device != q.device
-                    or cos_sin_cache.dtype != q.dtype):
-                cos_sin_cache = cos_sin_cache.to(q.device,
-                                                 dtype=q.dtype,
-                                                 non_blocking=True)
-                # Persist the converted cache so we don't re-copy/re-allocate
-                # on every forward when the original buffer starts on CPU.
-                self.rotary_emb.cos_sin_cache = cos_sin_cache
-            # # q, k 使用 continuous
-            q = q.contiguous()
-            k = k.contiguous()
-            torch.ops.vllm.rms_rotary_embedding_fuse(
-                positions,
-                q,
-                k,
-                self.head_dim,
-                cos_sin_cache,
-                self.rotary_emb.is_neox_style,
-                self.q_norm.weight,
-                self.k_norm.weight,
-                None,
-                None,
-                self.q_norm.variance_epsilon,
-            )
-        elif envs.VLLM_USE_FUSED_RMS_ROPE and positions.ndim == 2 and getattr(
-                self.rotary_emb, "mrope_section", None) is not None:
-            # Fused RMSNorm + M-RoPE path through custom op.
-            cos_sin_cache = self.rotary_emb.cos_sin_cache
-            if (cos_sin_cache.device != q.device
-                    or cos_sin_cache.dtype != q.dtype):
-                cos_sin_cache = cos_sin_cache.to(q.device,
-                                                 dtype=q.dtype,
-                                                 non_blocking=True)
-                self.rotary_emb.cos_sin_cache = cos_sin_cache
+        q_by_head = q.view(*q.shape[:-1], q.shape[-1] // self.head_dim, self.head_dim)
+        q_by_head = self.q_norm(q_by_head)
+        q = q_by_head.view(q.shape)
 
-            cos_sin = cos_sin_cache[positions]
-            cos, sin = cos_sin.chunk(2, dim=-1)
-
-            q = q.contiguous()
-            k = k.contiguous()
-            cos = cos.contiguous()
-            sin = sin.contiguous()
-            mrope_section = self.rotary_emb.mrope_section
-            assert mrope_section is not None and len(mrope_section) == 3
-            torch.ops.vllm.rms_mrope_fuse(
-                q,
-                k,
-                cos,
-                sin,
-                self.head_dim,
-                self.rotary_emb.rotary_dim,
-                mrope_section[0],
-                mrope_section[1],
-                mrope_section[2],
-                self.rotary_emb.mrope_interleaved,
-                self.q_norm.weight,
-                self.k_norm.weight,
-                self.q_norm.variance_epsilon,
-                None,
-                None,
-            )
-        else:
-            q_by_head = q.view(*q.shape[:-1], q.shape[-1] // self.head_dim, self.head_dim)
-            if envs.VLLM_USE_APEX_RN:
-                q_by_head = self.q_norm.forward_apex(q_by_head)
-            else:
-                q_by_head = self.q_norm.forward_cuda(q_by_head)
-            q = q_by_head.view(q.shape)
-
-            k_by_head = k.view(*k.shape[:-1], k.shape[-1] // self.head_dim, self.head_dim)
-            if envs.VLLM_USE_APEX_RN:
-                k_by_head = self.k_norm.forward_apex(k_by_head)
-            else:
-                k_by_head = self.k_norm.forward_cuda(k_by_head)
-            k = k_by_head.view(k.shape)
-            q, k = self.rotary_emb(positions, q, k)
+        k_by_head = k.view(*k.shape[:-1], k.shape[-1] // self.head_dim, self.head_dim)
+        k_by_head = self.k_norm(k_by_head)
+        k = k_by_head.view(k.shape)
+        q, k = self.rotary_emb(positions, q, k)
         attn_output = self.attn(q, k, v)
         output, _ = self.o_proj(attn_output)
         return output
 
 
 class Qwen3MoeDecoderLayer(nn.Module):
-
     def __init__(self, vllm_config: VllmConfig, prefix: str = "") -> None:
         super().__init__()
 
@@ -528,17 +433,15 @@ class Qwen3MoeDecoderLayer(nn.Module):
         return hidden_states, residual
 
 
-@support_torch_compile(
-    dynamic_arg_dims={
-        "input_ids": 0,
-        # positions is of shape (3, seq_len) if mrope is enabled,
-        # otherwise (seq_len, ).
-        "positions": -1,
-        "intermediate_tensors": 0,
-        "inputs_embeds": 0,
-    })
-class Qwen3MoeModel(nn.Module):
-    def __init__(self, *, vllm_config: VllmConfig, prefix: str = ""):
+@support_torch_compile
+class Qwen3MoeModel(nn.Module, EagleModelMixin):
+    def __init__(
+        self,
+        *,
+        vllm_config: VllmConfig,
+        prefix: str = "",
+        decoder_layer_type: type[torch.nn.Module] = Qwen3MoeDecoderLayer,
+    ):
         super().__init__()
 
         config = vllm_config.model_config.hf_text_config
@@ -547,17 +450,9 @@ class Qwen3MoeModel(nn.Module):
         eplb_config = parallel_config.eplb_config
         self.num_redundant_experts = eplb_config.num_redundant_experts
 
-        self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
         self.config = config
         self.quant_config = quant_config
-        self.quant_method = None
-        if quant_config is not None:
-            self.quant_method=quant_config.get_name()
-            self.quant_config=quant_config        
-            # if self.config.quantization_config["bits"] == 4:
-            os.environ['LLAMA_NN'] = '0'
-            os.environ['LM_NN'] = '0'  
         self.embed_tokens = VocabParallelEmbedding(
             config.vocab_size,
             config.hidden_size,
@@ -566,30 +461,20 @@ class Qwen3MoeModel(nn.Module):
         )
         self.start_layer, self.end_layer, self.layers = make_layers(
             config.num_hidden_layers,
-            lambda prefix: Qwen3MoeDecoderLayer(vllm_config=vllm_config, prefix=prefix),
+            lambda prefix: decoder_layer_type(vllm_config=vllm_config, prefix=prefix),
             prefix=f"{prefix}.layers",
         )
         self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.make_empty_intermediate_tensors = make_empty_intermediate_tensors_factory(
             ["hidden_states", "residual"], config.hidden_size
         )
-        # Track layers for auxiliary hidden state outputs (EAGLE3)
-        self.aux_hidden_state_layers: tuple[int, ...] = ()
-        
-        self.tritonsingleton= W8a8GetCacheJSON()
-            
-        self.use_llama_nn = os.environ.get('LLAMA_NN') == '1'
-        self.use_gemm_pad = os.environ.get('GEMM_PAD') == '1'
-        self.use_fa_pad = os.environ.get('FA_PAD') == '1'
-        self.use_awq_pad = os.environ.get('AWQ_PAD') == '1'
-        self.w8a8_strategy = envs.VLLM_W8A8_BACKEND
 
     def embed_input_ids(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self.embed_tokens(input_ids)
 
     def forward(
         self,
-        input_ids: torch.Tensor,
+        input_ids: torch.Tensor | None,
         positions: torch.Tensor,
         intermediate_tensors: IntermediateTensors | None = None,
         inputs_embeds: torch.Tensor | None = None,
@@ -605,18 +490,17 @@ class Qwen3MoeModel(nn.Module):
             hidden_states = intermediate_tensors["hidden_states"]
             residual = intermediate_tensors["residual"]
 
-        aux_hidden_states = []
+        aux_hidden_states = self._maybe_add_hidden_state(
+            [], self.start_layer, hidden_states, residual
+        )
         for layer_idx, layer in enumerate(
             islice(self.layers, self.start_layer, self.end_layer),
             start=self.start_layer,
         ):
-            # Collect auxiliary hidden states if specified
-            if layer_idx in self.aux_hidden_state_layers:
-                aux_hidden_state = (
-                    hidden_states + residual if residual is not None else hidden_states
-                )
-                aux_hidden_states.append(aux_hidden_state)
             hidden_states, residual = layer(positions, hidden_states, residual)
+            self._maybe_add_hidden_state(
+                aux_hidden_states, layer_idx + 1, hidden_states, residual
+            )
 
         if not get_pp_group().is_last_rank:
             return IntermediateTensors(
@@ -655,10 +539,6 @@ class Qwen3MoeModel(nn.Module):
         ignore_suffixes = (
             ".bias",
             "_bias",
-            ".k_scale",
-            "_k_scale",
-            ".v_scale",
-            "_v_scale",
             ".weight_scale",
             "_weight_scale",
             ".input_scale",
@@ -669,9 +549,6 @@ class Qwen3MoeModel(nn.Module):
         loaded_params: set[str] = set()
         expert_params_mapping = self.get_expert_mapping()
         for name, loaded_weight in weights:
-            if self.use_llama_nn:
-                current_count = loaded_weight.current_count 
-                total_count = loaded_weight.total_count
             if self.quant_config is not None and (
                 scale_name := self.quant_config.get_cache_scale(name)
             ):
@@ -685,6 +562,10 @@ class Qwen3MoeModel(nn.Module):
                 weight_loader(param, loaded_weight)
                 loaded_params.add(scale_name)
                 continue
+            if "scale" in name or "zero_point" in name:
+                name = maybe_remap_kv_scale_name(name, params_dict)
+                if name is None:
+                    continue
             for param_name, weight_name, shard_id in stacked_params_mapping:
                 # Skip non-stacked layers and experts (experts handled below).
                 if weight_name not in name:
@@ -777,72 +658,19 @@ class Qwen3MoeModel(nn.Module):
                     # Skip layers on other devices.
                     if is_pp_missing_parameter(name, self):
                         continue
-                    # Remapping the name of FP8 kv-scale.
-                    if name.endswith("kv_scale"):
-                        remapped_kv_scale_name = name.replace(
-                            ".kv_scale", ".attn.kv_scale"
-                        )
-                        if remapped_kv_scale_name not in params_dict:
-                            logger.warning_once(
-                                "Found kv scale in the checkpoint (e.g. %s), but not found the expected name in the model (e.g. %s). kv-scale is not loaded.",  # noqa: E501
-                                name,
-                                remapped_kv_scale_name,
-                            )
-                            continue
-                        else:
-                            name = remapped_kv_scale_name
+                    if name not in params_dict:
+                        continue
                     param = params_dict[name]
                     weight_loader = getattr(
                         param, "weight_loader", default_weight_loader
                     )
                     weight_loader(param, loaded_weight)
             loaded_params.add(name)
-        
-        if self.use_llama_nn and self.quant_method is None and current_count==total_count:
-            lay_key_words = [
-                "gate_up_proj.weight",
-                "down_proj.weight",
-                "mlp.gate.weight",
-                "self_attn.qkv_proj.weight",
-                "self_attn.o_proj.weight",
-                "lm_head.weight",
-            ]
-            combined_words = "|".join(lay_key_words)
-            
-            # lay_qkv_words = ["self_attn.qkv_proj.weight"]   
-            # qkv_words = "|".join(lay_qkv_words)  
-            
-            # lay_qkv_bias_words = ["self_attn.qkv_proj.bias"]   
-            # qkv_bias_words = "|".join(lay_qkv_bias_words) 
-            
-            # for layername in loaded_params:
-            for layername in params_dict.keys():
-                weight = params_dict[layername]
-                os.environ['LM_NN'] = '0' 
-                # if self.use_fa_pad and (re.findall(qkv_bias_words, layername)):
-                #     weight.data = pad_weight(weight.data, 32)
-                    
-                matches = re.findall(combined_words, layername)
-                if matches:   
-                    # if self.use_gemm_pad and gemm_bank_conf(weight.data.shape[0]):
-                    #     weight.data = pad_weight(weight.data, 32)  
-                    
-                    # if self.use_fa_pad and (re.findall(qkv_words, layername)):
-                    #     if not gemm_bank_conf(weight.data.shape[0]):
-                    #         weight.data = pad_weight(weight.data, 32)
-                        
-                    _weight = torch.zeros_like(weight.data)
-                    ori_shape =_weight.shape
-                    
-                    ops.trans_w16_gemm(_weight, weight.data, _weight.shape[0], _weight.shape[1])
-                    weight.data.copy_(_weight)
-                    
-                    weight.data=weight.data.reshape(ori_shape[1],-1)
         return loaded_params
 
 
 class Qwen3MoeForCausalLM(
-    nn.Module, SupportsPP, SupportsLoRA, SupportsEagle3, MixtureOfExperts
+    nn.Module, SupportsPP, SupportsLoRA, SupportsEagle, SupportsEagle3, MixtureOfExperts
 ):
     packed_modules_mapping = {
         "qkv_proj": [
@@ -850,6 +678,11 @@ class Qwen3MoeForCausalLM(
             "k_proj",
             "v_proj",
         ]
+    }
+
+    embedding_modules = {
+        "embed_tokens": "input_embeddings",
+        "lm_head": "output_embeddings",
     }
 
     fall_back_to_pt_during_load = False
@@ -922,19 +755,12 @@ class Qwen3MoeForCausalLM(
                 moe.n_redundant_experts = self.num_redundant_experts
                 moe.experts.update_expert_map()
 
-    def set_aux_hidden_state_layers(self, layers: tuple[int, ...]) -> None:
-        self.model.aux_hidden_state_layers = layers
-
-    def get_eagle3_aux_hidden_state_layers(self) -> tuple[int, ...]:
-        num_layers = len(self.model.layers)
-        return (2, num_layers // 2, num_layers - 3)
-
     def embed_input_ids(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self.model.embed_input_ids(input_ids)
 
     def forward(
         self,
-        input_ids: torch.Tensor,
+        input_ids: torch.Tensor | None,
         positions: torch.Tensor,
         intermediate_tensors: IntermediateTensors | None = None,
         inputs_embeds: torch.Tensor | None = None,

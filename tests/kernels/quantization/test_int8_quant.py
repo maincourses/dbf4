@@ -8,7 +8,6 @@ from tests.kernels.quant_utils import ref_dynamic_per_token_quant
 from tests.kernels.utils import opcheck
 from vllm._custom_ops import scaled_int8_quant
 from vllm.utils.torch_utils import set_random_seed
-from vllm.platforms import current_platform
 
 DTYPES = [torch.bfloat16, torch.float]
 HIDDEN_SIZES = [17, 1024, 1025, 1026, 5137, 8193]
@@ -39,8 +38,6 @@ def opcheck_int8_quant_dynamic(output, input, symmetric=True):
         opcheck(torch.ops._C.dynamic_scaled_int8_quant, (output, input, scale, azp))
 
 
-@pytest.mark.skipif(current_platform.is_rocm(),
-                    reason="Currently, there is not supported on ROCm.")
 @pytest.mark.parametrize("num_tokens", NUM_TOKENS)
 @pytest.mark.parametrize("hidden_size", HIDDEN_SIZES)
 @pytest.mark.parametrize("dtype", DTYPES)
@@ -63,9 +60,8 @@ def test_dynamic_scaled_int8_quant(
     torch.testing.assert_close(ops_out, ref_out, atol=1, rtol=0.0)
 
     opcheck_int8_quant_dynamic(ops_out, x)
-    
-@pytest.mark.skipif(current_platform.is_rocm(),
-                    reason="Currently, there is not supported on ROCm.")
+
+
 @pytest.mark.parametrize("num_tokens", NUM_TOKENS)
 @pytest.mark.parametrize("hidden_size", HIDDEN_SIZES)
 @pytest.mark.parametrize("dtype", DTYPES)
@@ -169,6 +165,7 @@ def test_static_scaled_int8_azp_quant(
     torch.testing.assert_close(out1, out2, atol=1, rtol=0.0)
 
     opcheck_int8_quant_static(out2, x, scale_arg, azp_arg)
+
 
 @pytest.mark.parametrize("is_max", [True, False])
 @torch.inference_mode()

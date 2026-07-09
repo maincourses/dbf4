@@ -46,14 +46,10 @@ def awq_dequantize_kernel(
     result_masks = result_masks_y[:, None] & result_masks_x[None, :]
 
     # Load the weights.
-    iweights = tl.load(qweight_ptr + offsets, masks)
-    
-    iweights =tl.join(iweights, iweights).reshape(iweights.shape[:-1] + [2 * iweights.shape[-1]])
-    iweights =tl.join(iweights, iweights).reshape(iweights.shape[:-1] + [2 * iweights.shape[-1]])
-    iweights =tl.join(iweights, iweights).reshape(iweights.shape[:-1] + [2 * iweights.shape[-1]])
-    # iweights = tl.interleave(iweights, iweights)
-    # iweights = tl.interleave(iweights, iweights)
-    # iweights = tl.interleave(iweights, iweights)
+    iweights = tl.load(qweight_ptr + offsets, masks, 0.0)
+    iweights = tl.interleave(iweights, iweights)
+    iweights = tl.interleave(iweights, iweights)
+    iweights = tl.interleave(iweights, iweights)
 
     # Create reverse AWQ order as tensor: [0, 4, 1, 5, 2, 6, 3, 7]
     # that will map given indices to the correct order.
@@ -80,14 +76,10 @@ def awq_dequantize_kernel(
     zero_masks = zero_masks_y[:, None] & zero_masks_x[None, :]
 
     # Load the zeros.
-    zeros = tl.load(zeros_ptr + zero_offsets, zero_masks)
-    # zeros = tl.interleave(zeros, zeros)
-    # zeros = tl.interleave(zeros, zeros)
-    # zeros = tl.interleave(zeros, zeros)
-    zeros =tl.join(zeros, zeros).reshape(zeros.shape[:-1] + [2 * zeros.shape[-1]])
-    zeros =tl.join(zeros, zeros).reshape(zeros.shape[:-1] + [2 * zeros.shape[-1]])
-    zeros =tl.join(zeros, zeros).reshape(zeros.shape[:-1] + [2 * zeros.shape[-1]])
-    
+    zeros = tl.load(zeros_ptr + zero_offsets, zero_masks, 0.0)
+    zeros = tl.interleave(zeros, zeros)
+    zeros = tl.interleave(zeros, zeros)
+    zeros = tl.interleave(zeros, zeros)
     zeros = tl.broadcast_to(zeros, (BLOCK_SIZE_Y, BLOCK_SIZE_X * 8))
 
     # Unpack and reorder: shift out the correct 4-bit value and mask.
@@ -102,7 +94,7 @@ def awq_dequantize_kernel(
     scale_masks = scale_masks_y[:, None] & scale_masks_x[None, :]
 
     # Load the scales.
-    scales = tl.load(scales_ptr + scale_offsets, scale_masks)
+    scales = tl.load(scales_ptr + scale_offsets, scale_masks, 0.0)
     scales = tl.broadcast_to(scales, (BLOCK_SIZE_Y, BLOCK_SIZE_X * 8))
 
     # Dequantize.
@@ -114,62 +106,68 @@ def awq_dequantize_kernel(
 
 
 @triton.jit
-def awq_gemm_kernel(a_ptr, b_ptr, c_ptr, zeros_ptr, scales_ptr, M, N, K,
-                    group_size, BLOCK_SIZE_M: tl.constexpr,
-                    BLOCK_SIZE_N: tl.constexpr, BLOCK_SIZE_K: tl.constexpr,
-                    GROUP_SIZE_M: tl.constexpr,SPLIT_K: tl.constexpr):
+def awq_gemm_kernel(
+    a_ptr,
+    b_ptr,
+    c_ptr,
+    zeros_ptr,
+    scales_ptr,
+    M,
+    N,
+    K,
+    group_size,
+    BLOCK_SIZE_M: tl.constexpr,
+    BLOCK_SIZE_N: tl.constexpr,
+    BLOCK_SIZE_K: tl.constexpr,
+    SPLIT_K: tl.constexpr,
+):
     pid = tl.program_id(axis=0)
     pid_z = tl.program_id(1)
-    
-    num_pid_m = tl.cdiv(M, BLOCK_SIZE_M)
-    num_pid_n = tl.cdiv(N, BLOCK_SIZE_N)
-    if GROUP_SIZE_M == 1:
-        pid_m = pid // num_pid_n
-        pid_n = pid % num_pid_n
-    else:
-        num_pid_in_group = GROUP_SIZE_M * num_pid_n
-        group_id = pid // num_pid_in_group
-        first_pid_m = group_id * GROUP_SIZE_M
-        group_size_m = min(num_pid_m - first_pid_m, GROUP_SIZE_M)
-        pid_m = first_pid_m + (pid % group_size_m)
-        pid_n = (pid % num_pid_in_group) // group_size_m
 
-    # accumulator_dtype = c_ptr.type.element_ty
-    BLOCK_SIZE_N_8 = BLOCK_SIZE_N // 8
-    N_8 = N // 8
+    # NOTE: This doesn't work in TRITON_INTERPRET=1 mode.  Use below instead.
+    # num_pid_n = (N + BLOCK_SIZE_N - 1) // BLOCK_SIZE_N
+    num_pid_n = tl.cdiv(N, BLOCK_SIZE_N)
+
+    pid_m = pid // num_pid_n
+    pid_n = pid % num_pid_n
+
+    accumulator_dtype = c_ptr.type.element_ty
+
     # NOTE: This doesn't work in TRITON_INTERPRET=1 mode.  Use below instead.
     # accumulator = tl.arange(0, BLOCK_SIZE_N)
     # accumulator = tl.broadcast_to(accumulator[None, :],
     # (BLOCK_SIZE_M, BLOCK_SIZE_N))
     # accumulator = accumulator & 0x0
     # accumulator = accumulator.to(accumulator_dtype)
-    accumulator = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N),
-                           dtype=tl.float32)
+    accumulator = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=accumulator_dtype)
 
     # Create reverse AWQ order as tensor: [0, 4, 1, 5, 2, 6, 3, 7]
     # that will map given indices to the correct order.
-    shifts = ((tl.arange(0, 2) * 16)[None, :] +
-                                (tl.arange(0, 4) * 4)[:, None]).reshape(1,8)
+    reverse_awq_order_tensor = (
+        (tl.arange(0, 2) * 4)[None, :] + tl.arange(0, 4)[:, None]
+    ).reshape(8)
 
     # Create the necessary shifts to use to unpack.
-    # shifts = reverse_awq_order_tensor * 4
-    shifts = tl.broadcast_to(shifts,
-                             (BLOCK_SIZE_K * (BLOCK_SIZE_N // 8), 8))
+    shifts = reverse_awq_order_tensor * 4
+    shifts = tl.broadcast_to(shifts[None, :], (BLOCK_SIZE_K * (BLOCK_SIZE_N // 8), 8))
     shifts = tl.reshape(shifts, (BLOCK_SIZE_K, BLOCK_SIZE_N))
 
     # Offsets and masks.
     offsets_am = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
     masks_am = offsets_am < M
 
-    offsets_bzn = pid_n * (BLOCK_SIZE_N_8) + tl.arange(0, BLOCK_SIZE_N // 8)
-    masks_bzn = offsets_bzn < N_8
+    offsets_bn = pid_n * (BLOCK_SIZE_N // 8) + tl.arange(0, BLOCK_SIZE_N // 8)
+    masks_bn = offsets_bn < N // 8
+
+    offsets_zn = pid_n * (BLOCK_SIZE_N // 8) + tl.arange(0, BLOCK_SIZE_N // 8)
+    masks_zn = offsets_zn < N // 8
 
     offsets_sn = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
     masks_sn = offsets_sn < N
 
     offsets_k = pid_z * BLOCK_SIZE_K + tl.arange(0, BLOCK_SIZE_K)
     offsets_a = K * offsets_am[:, None] + offsets_k[None, :]
-    offsets_b = (N_8) * offsets_k[:, None] + offsets_bzn[None, :]
+    offsets_b = (N // 8) * offsets_k[:, None] + offsets_bn[None, :]
 
     a_ptrs = a_ptr + offsets_a
     b_ptrs = b_ptr + offsets_b
@@ -180,42 +178,33 @@ def awq_gemm_kernel(a_ptr, b_ptr, c_ptr, zeros_ptr, scales_ptr, M, N, K,
     for k in range(0, tl.cdiv(K, BLOCK_SIZE_K * SPLIT_K)):
         masks_k = offsets_k < K
         masks_a = masks_am[:, None] & masks_k[None, :]
-        a = tl.load(a_ptrs, mask=masks_a)
+        a = tl.load(a_ptrs, mask=masks_a, other=0.0)
 
-        masks_b = masks_k[:, None] & masks_bzn[None, :]
-        b = tl.load(b_ptrs, mask=masks_b)
-        # b = tl.interleave(b, b)
-        # b = tl.interleave(b, b)
-        # b = tl.interleave(b, b)
-        b =tl.join(b, b).reshape(b.shape[:-1] + [2 * b.shape[-1]])
-        b =tl.join(b, b).reshape(b.shape[:-1] + [2 * b.shape[-1]])
-        b =tl.join(b, b).reshape(b.shape[:-1] + [2 * b.shape[-1]])
+        masks_b = masks_k[:, None] & masks_bn[None, :]
+        b = tl.load(b_ptrs, mask=masks_b, other=0.0)
+        b = tl.interleave(b, b)
+        b = tl.interleave(b, b)
+        b = tl.interleave(b, b)
 
         # Dequantize b.
         offsets_szk = (
             BLOCK_SIZE_K * SPLIT_K * k + pid_z * BLOCK_SIZE_K
-        ) // group_size 
-        offsets_szk = offsets_szk + (tl.arange(0, BLOCK_SIZE_K) // group_size) 
-        offsets_z = (N_8) * offsets_szk[:, None] + offsets_bzn[None, :]
+        ) // group_size + tl.arange(0, 1)
+        offsets_z = (N // 8) * offsets_szk[:, None] + offsets_zn[None, :]
         masks_zk = offsets_szk < K // group_size
-        masks_z = masks_zk[:, None] & masks_bzn[None, :]
+        masks_z = masks_zk[:, None] & masks_zn[None, :]
         zeros_ptrs = zeros_ptr + offsets_z
-        zeros = tl.load(zeros_ptrs, mask=masks_z)
-        # zeros = tl.interleave(zeros, zeros)
-        # zeros = tl.interleave(zeros, zeros)
-        # zeros = tl.interleave(zeros, zeros)
-        
-        zeros =tl.join(zeros, zeros).reshape(zeros.shape[:-1] + [2 * zeros.shape[-1]])
-        zeros =tl.join(zeros, zeros).reshape(zeros.shape[:-1] + [2 * zeros.shape[-1]])
-        zeros =tl.join(zeros, zeros).reshape(zeros.shape[:-1] + [2 * zeros.shape[-1]])
-        
+        zeros = tl.load(zeros_ptrs, mask=masks_z, other=0.0)
+        zeros = tl.interleave(zeros, zeros)
+        zeros = tl.interleave(zeros, zeros)
+        zeros = tl.interleave(zeros, zeros)
         zeros = tl.broadcast_to(zeros, (BLOCK_SIZE_K, BLOCK_SIZE_N))
 
         offsets_s = N * offsets_szk[:, None] + offsets_sn[None, :]
         masks_sk = offsets_szk < K // group_size
         masks_s = masks_sk[:, None] & masks_sn[None, :]
         scales_ptrs = scales_ptr + offsets_s
-        scales = tl.load(scales_ptrs, mask=masks_s)
+        scales = tl.load(scales_ptrs, mask=masks_s, other=0.0)
         scales = tl.broadcast_to(scales, (BLOCK_SIZE_K, BLOCK_SIZE_N))
 
         b = (b >> shifts) & 0xF
@@ -224,20 +213,18 @@ def awq_gemm_kernel(a_ptr, b_ptr, c_ptr, zeros_ptr, scales_ptr, M, N, K,
         b = b.to(c_ptr.type.element_ty)
 
         # Accumulate results.
-        accumulator = tl.dot(a, b, accumulator, out_dtype=tl.float32)
+        accumulator = tl.dot(a, b, accumulator, out_dtype=accumulator_dtype)
 
         offsets_k += BLOCK_SIZE_K * SPLIT_K
         a_ptrs += BLOCK_SIZE_K * SPLIT_K
-        b_ptrs += BLOCK_SIZE_K * SPLIT_K * (N_8)
+        b_ptrs += BLOCK_SIZE_K * SPLIT_K * (N // 8)
 
     c = accumulator.to(c_ptr.type.element_ty)
-    c_ptrs = c_ptr + N * offsets_am[:, None] + offsets_sn[None, :]
-    c_mask = masks_am[:, None] & masks_sn[None, :]
-    if SPLIT_K == 1:
-        tl.store(c_ptrs, c, mask=c_mask)
-        # tl.store(c_ptrs, c)
-    else:
-        tl.atomic_add(c_ptrs, c, mask=c_mask)
+    offs_cm = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
+    offs_cn = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
+    c_ptrs = c_ptr + pid_z * N * M + N * offs_cm[:, None] + offs_cn[None, :]
+    c_mask = (offs_cm[:, None] < M) & (offs_cn[None, :] < N)
+    tl.store(c_ptrs, c, mask=c_mask)
 
 
 # qweights - [K     , M // 8], int32
@@ -297,12 +284,16 @@ def awq_dequantize_triton(
 # qzeros  - [K // G, N // 8]
 # scales  - [K // G, N]
 # split_k_iters - parallelism along K-dimension, int, power of 2.
-def awq_gemm_triton(input: torch.Tensor,
-                    qweight: torch.Tensor,
-                    scales: torch.Tensor,
-                    qzeros: torch.Tensor,
-                    split_k_iters: int,
-                    config=None) -> torch.Tensor:
+def awq_gemm_triton(
+    input: torch.Tensor,
+    qweight: torch.Tensor,
+    scales: torch.Tensor,
+    qzeros: torch.Tensor,
+    split_k_iters: int,
+    block_size_m: int = 32,
+    block_size_n: int = 32,
+    block_size_k: int = 32,
+) -> torch.Tensor:
     M, K = input.shape
     N = qweight.shape[1] * 8
     group_size = qweight.shape[0] // qzeros.shape[0]
@@ -317,29 +308,30 @@ def awq_gemm_triton(input: torch.Tensor,
     assert group_size in AWQ_TRITON_SUPPORTED_GROUP_SIZES or group_size == K
 
     grid = lambda META: (
-        triton.cdiv(M, META['BLOCK_SIZE_M']) * triton.cdiv(N, META['BLOCK_SIZE_N']),
-        META['SPLIT_K'],
+        triton.cdiv(M, META["BLOCK_SIZE_M"]) * triton.cdiv(N, META["BLOCK_SIZE_N"]),
+        split_k_iters,
     )
-    
-    if config is None:
-        config= {'BLOCK_SIZE_M': 16, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8,'SPLIT_K': 8}
-        if M >256:
-        #print("INFO:this size not found in json.")
-            config= {'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 8,'SPLIT_K': 1}
 
-    result = torch.zeros((M, N), dtype=scales.dtype, device=input.device)
+    result = torch.zeros((split_k_iters, M, N), dtype=scales.dtype, device=input.device)
 
     # A = input, B = qweight, C = result
     # A = M x K, B = K x N, C = M x N
-    awq_gemm_kernel[grid](input,
-                        qweight,
-                        result,
-                        qzeros,
-                        scales,
-                        M,
-                        N,
-                        K,
-                        group_size,
-                        **config)
+    awq_gemm_kernel[grid](
+        input,
+        qweight,
+        result,
+        qzeros,
+        scales,
+        M,
+        N,
+        K,
+        group_size,
+        BLOCK_SIZE_M=block_size_m,
+        BLOCK_SIZE_N=block_size_n,
+        BLOCK_SIZE_K=block_size_k,
+        SPLIT_K=split_k_iters,
+    )
+
+    result = result.sum(0)
 
     return result

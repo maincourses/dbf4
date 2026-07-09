@@ -13,7 +13,10 @@ from vllm.model_executor.custom_op import CustomOp
 from vllm.model_executor.layers.batch_invariant import (
     vllm_is_batch_invariant,
 )
-from vllm.model_executor.layers.fused_moe.config import RoutingMethodType
+from vllm.model_executor.layers.fused_moe.config import (
+    RoutingMethodType,
+    get_routing_method_type,
+)
 from vllm.model_executor.layers.fused_moe.rocm_aiter_fused_moe import (
     rocm_aiter_grouped_topk,
 )
@@ -261,7 +264,6 @@ class GroupedTopKRouter(BaseRouter):
         num_fused_shared_experts: int = 0,
         enable_eplb: bool = False,
         indices_type_getter: Callable[[], torch.dtype | None] | None = None,
-        use_fused_gate: bool | None = False,
     ):
         super().__init__(
             top_k=top_k,
@@ -277,18 +279,16 @@ class GroupedTopKRouter(BaseRouter):
         self.routed_scaling_factor = routed_scaling_factor
         self.e_score_correction_bias = e_score_correction_bias
         self.num_fused_shared_experts = num_fused_shared_experts
-        self.use_fused_gate = use_fused_gate
-
-        if scoring_func == "sigmoid":
-            self._routing_method_type = RoutingMethodType.DeepSeekV3
-        else:
-            # NOTE: this prohibits the FLASHINFER_TRTLLM kernels from
-            # being selected, since they only support DeepSeek-style.
-            self._routing_method_type = RoutingMethodType.Unspecified
 
     @property
     def routing_method_type(self) -> RoutingMethodType:
-        return self._routing_method_type
+        return get_routing_method_type(
+            scoring_func=self.scoring_func,
+            top_k=self.top_k,
+            renormalize=self.renormalize,
+            num_expert_group=self.num_expert_group,
+            has_e_score_bias=self.e_score_correction_bias is not None,
+        )
 
     def _compute_routing(
         self,
@@ -335,44 +335,19 @@ class GroupedTopKRouter(BaseRouter):
                 rocm_aiter_grouped_topk,
                 num_fused_shared_experts=self.num_fused_shared_experts,
             )
-            enable_shared_experts_fusion = True
         else:
             grouped_topk_impl = grouped_topk
-            enable_shared_experts_fusion = False
 
-        if self.use_fused_gate:
-            if envs.VLLM_USE_LIGHTOP:
-                from lightop import op as op
-                topk_weights, topk_ids = op.moe_fused_gate(
-                    router_logits,
-                    self.e_score_correction_bias,
-                    self.num_expert_group,
-                    self.topk_group,
-                    self.top_k,
-                    self.num_fused_shared_experts if enable_shared_experts_fusion else 0,
-                    self.routed_scaling_factor,
-                )
-            else:
-                topk_weights, topk_ids = ops.moe_fused_gate(
-                    router_logits,
-                    self.e_score_correction_bias,
-                    self.num_expert_group,
-                    self.topk_group,
-                    self.top_k,
-                    routed_scaling_factor=self.routed_scaling_factor,
-                    n_share_experts_fusion = (self.num_fused_shared_experts if enable_shared_experts_fusion else 0),
-                )
-        else:
-            topk_weights, topk_ids = grouped_topk_impl(
-                hidden_states=hidden_states,
-                gating_output=router_logits,
-                topk=self.top_k,
-                renormalize=self.renormalize,
-                num_expert_group=self.num_expert_group,
-                topk_group=self.topk_group,
-                scoring_func=self.scoring_func,
-                routed_scaling_factor=self.routed_scaling_factor,
-                e_score_correction_bias=self.e_score_correction_bias,
-            )
+        topk_weights, topk_ids = grouped_topk_impl(
+            hidden_states=hidden_states,
+            gating_output=router_logits,
+            topk=self.top_k,
+            renormalize=self.renormalize,
+            num_expert_group=self.num_expert_group,
+            topk_group=self.topk_group,
+            scoring_func=self.scoring_func,
+            routed_scaling_factor=self.routed_scaling_factor,
+            e_score_correction_bias=self.e_score_correction_bias,
+        )
 
         return topk_weights, topk_ids

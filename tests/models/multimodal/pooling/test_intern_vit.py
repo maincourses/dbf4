@@ -1,19 +1,15 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
-
-import os
 import pytest
 import torch
 import torch.nn as nn
-# from huggingface_hub import snapshot_download
+from huggingface_hub import snapshot_download
 from transformers import AutoConfig, AutoModel, CLIPImageProcessor
-
 
 from vllm.distributed import cleanup_dist_env_and_memory
 from vllm.utils.torch_utils import STR_DTYPE_TO_TORCH_DTYPE
 
 from ....conftest import ImageTestAssets
-from ....utils import models_path_prefix
 
 # we use snapshot_download to prevent conflicts between
 # dynamic_module and trust_remote_code for hf_runner
@@ -27,8 +23,7 @@ def run_intern_vit_test(
     *,
     dtype: str,
 ):
-    # model = snapshot_download(model_id, allow_patterns=DOWNLOAD_PATTERN)
-    model = os.path.join(models_path_prefix, model_id)
+    model = snapshot_download(model_id, allow_patterns=DOWNLOAD_PATTERN)
     torch_dtype = STR_DTYPE_TO_TORCH_DTYPE[dtype]
 
     img_processor = CLIPImageProcessor.from_pretrained(model)

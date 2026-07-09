@@ -49,7 +49,6 @@ from .glm4_moe import (
     get_spec_layer_idx_from_weight_name,
 )
 from .utils import maybe_prefix
-from vllm.compilation.decorators import support_torch_compile
 
 
 class SharedHead(nn.Module):
@@ -185,7 +184,6 @@ class Glm4MoeMultiTokenPredictor(nn.Module):
         return logits
 
 
-@support_torch_compile
 class Glm4MoeMTP(nn.Module, Glm4MixtureOfExperts):
     def __init__(self, *, vllm_config: VllmConfig, prefix: str = ""):
         super().__init__()
@@ -218,7 +216,7 @@ class Glm4MoeMTP(nn.Module, Glm4MixtureOfExperts):
 
     def forward(
         self,
-        input_ids: torch.Tensor,
+        input_ids: torch.Tensor | None,
         positions: torch.Tensor,
         hidden_states: torch.Tensor,
         intermediate_tensors: IntermediateTensors | None = None,
@@ -266,16 +264,10 @@ class Glm4MoeMTP(nn.Module, Glm4MixtureOfExperts):
             elif name == "model.embed_tokens.weight":
                 spec_layer = self.model.mtp_start_layer_idx
             else:
-                if name == "lm_head.weight":
-                    spec_layer = self.model.mtp_start_layer_idx
-                    name = f"model.layers.{spec_layer}.shared_head.head.weight"
-                elif name == "model.embed_tokens.weight":
-                    spec_layer = self.model.mtp_start_layer_idx
-                else:
-                    spec_layer = get_spec_layer_idx_from_weight_name(self.config, name)
-                    if spec_layer is None:
-                        continue
-                    name = self._rewrite_spec_layer_name(spec_layer, name)
+                spec_layer = get_spec_layer_idx_from_weight_name(self.config, name)
+                if spec_layer is None:
+                    continue
+                name = self._rewrite_spec_layer_name(spec_layer, name)
             for param_name, weight_name, shard_id in stacked_params_mapping:
                 # Skip non-stacked layers and experts (experts handled below).
                 if weight_name not in name:

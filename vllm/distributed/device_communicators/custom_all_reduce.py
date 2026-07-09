@@ -4,7 +4,6 @@
 from contextlib import contextmanager
 from typing import cast
 
-import os
 import torch
 import torch.distributed as dist
 from torch.distributed import ProcessGroup
@@ -57,7 +56,7 @@ class CustomAllreduce:
         self,
         group: ProcessGroup,
         device: int | str | torch.device,
-        max_size=8192 * 512,
+        max_size=8192 * 1024,
         symm_mem_enabled=False,
     ) -> None:
         """
@@ -99,10 +98,6 @@ class CustomAllreduce:
         rank = dist.get_rank(group=self.group)
         self.rank = rank
         world_size = dist.get_world_size(group=self.group)
-        
-        if world_size > envs.VLLM_CUSTOM_ALLREDUCE_SUPPORTED_WORLDSIZE_MAX:
-            return
-
         if world_size == 1:
             # No need to initialize custom allreduce for single GPU case.
             return
@@ -142,11 +137,7 @@ class CustomAllreduce:
         else:
             device_ids = list(range(cuda_device_count_stateless()))
 
-        if (world_size == len(device_ids)):
-            physical_device_id = device_ids[device.index % world_size]
-        else:
-            physical_device_id = device_ids[device.index]
-
+        physical_device_id = device_ids[device.index]
         tensor = torch.tensor([physical_device_id], dtype=torch.int, device="cpu")
         gather_list = [
             torch.tensor([0], dtype=torch.int, device="cpu") for _ in range(world_size)
@@ -159,20 +150,13 @@ class CustomAllreduce:
         # this checks hardware and driver support for NVLink
         assert current_platform.is_cuda_alike()
         fully_connected = current_platform.is_fully_connected(physical_device_ids)
-        
-        # if world_size > 2 and not fully_connected:
-        if not fully_connected:
-            max_size = 32 * 8192 * 2
-            if not envs.VLLM_PCIE_USE_CUSTOM_ALLREDUCE:
-                logger.warning(
-                    "Custom allreduce is disabled because it's not supported on"
-                    " more than two PCIe-only GPUs. To silence this warning, "
-                    "specify disable_custom_all_reduce=True explicitly.")
-                return
+        if world_size > 2 and not fully_connected:
             logger.warning(
-                "We are using PCIe's custom allreduce."
-                "If the performance is poor, we can add "
-                "--disable-custom-all-reduce in the instruction.")
+                "Custom allreduce is disabled because it's not supported on"
+                " more than two PCIe-only GPUs. To silence this warning, "
+                "specify disable_custom_all_reduce=True explicitly."
+            )
+            return
         # test P2P capability, this checks software/cudaruntime support
         # this is expensive to compute at the first time
         # then we cache the result
@@ -257,7 +241,9 @@ class CustomAllreduce:
             return False
         # for 4 or more non NVLink-capable GPUs, custom allreduce provides
         # little performance improvement over NCCL.
-        return inp_size <= self.max_size
+        if self.world_size == 2 or self.fully_connected:
+            return inp_size < self.max_size
+        return False
 
     def all_reduce(
         self, inp: torch.Tensor, *, out: torch.Tensor = None, registered: bool = False
@@ -285,10 +271,7 @@ class CustomAllreduce:
             return None
         if self._IS_CAPTURING:
             if torch.cuda.is_current_stream_capturing():
-                if envs.VLLM_CUSTOM_CACHE:
-                    return self.all_reduce(input, registered=True)
-                else:
-                    return self.all_reduce(input, registered=False)
+                return self.all_reduce(input, registered=True)
             else:
                 # If warm up, mimic the allocation pattern since custom
                 # allreduce is out-of-place.
@@ -309,7 +292,6 @@ class CustomAllreduce:
 
     def __del__(self):
         self.close()
-
 
     @staticmethod
     def create_shared_buffer(

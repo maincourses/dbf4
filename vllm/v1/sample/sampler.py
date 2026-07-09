@@ -5,7 +5,6 @@
 import torch
 import torch.nn as nn
 
-from vllm import envs
 from vllm.config.model import LogprobsMode
 from vllm.utils.platform_utils import is_pin_memory_available
 from vllm.v1.outputs import LogprobsTensors, SamplerOutput
@@ -185,29 +184,12 @@ class Sampler(nn.Module):
             logits = processor.apply(logits)
 
         # Apply top_k and/or top_p.
-        if (
-            envs.VLLM_V1_USE_REDUCED_TOPK_TOPP_SAMPLER
-            and sampling_metadata.top_k is not None
-            and sampling_metadata.top_p is not None
-            and sampling_metadata.max_top_k is not None
-            and not sampling_metadata.has_any_no_top_k
-            and self.topk_topp_sampler.forward.__name__ == "forward_native"
-        ):
-            random_sampled, processed_logprobs = self.topk_topp_sampler(
-                logits,
-                sampling_metadata.generators,
-                sampling_metadata.top_k,
-                sampling_metadata.top_p,
-                max_top_k=sampling_metadata.max_top_k,
-                has_any_no_top_k=sampling_metadata.has_any_no_top_k,
-            )
-        else:
-            random_sampled, processed_logprobs = self.topk_topp_sampler(
-                logits,
-                sampling_metadata.generators,
-                sampling_metadata.top_k,
-                sampling_metadata.top_p,
-            )
+        random_sampled, processed_logprobs = self.topk_topp_sampler(
+            logits,
+            sampling_metadata.generators,
+            sampling_metadata.top_k,
+            sampling_metadata.top_p,
+        )
 
         if greedy_sampled is None:
             return random_sampled, processed_logprobs
@@ -235,7 +217,7 @@ class Sampler(nn.Module):
 
         Args:
           logprobs: (num tokens) x (vocab) tensor
-          num_logprobs: minimum number of logprobs to
+          num_logprobs: maximum number of logprobs to
                         retain per token
           token_ids: prompt tokens (if prompt logprobs)
                      or sampled tokens (if sampled

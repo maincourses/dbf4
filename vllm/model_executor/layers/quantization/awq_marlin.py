@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any
 
 import torch
 from safetensors.torch import _TYPES as _SAFETENSORS_TO_TORCH_DTYPE
@@ -14,7 +14,7 @@ from vllm.model_executor.layers.fused_moe.config import (
     FusedMoEConfig,
     FusedMoEQuantConfig,
 )
-from vllm.model_executor.layers.fused_moe.fused_marlin_moe_w4a16 import fused_marlin_moe_int4
+from vllm.model_executor.layers.fused_moe.fused_marlin_moe import fused_marlin_moe
 from vllm.model_executor.layers.fused_moe.layer import (
     FusedMoE,
     FusedMoEMethodBase,
@@ -49,7 +49,6 @@ from vllm.model_executor.layers.quantization.utils.marlin_utils import (
     moe_awq_to_marlin_zero_points,
     verify_marlin_supported,
     verify_marlin_supports_shape,
-    awq_marlin_moe_permute_sz,
 )
 from vllm.model_executor.layers.quantization.utils.quant_utils import is_layer_skipped
 from vllm.model_executor.layers.vocab_parallel_embedding import ParallelLMHead
@@ -149,7 +148,7 @@ class AWQMarlinConfig(QuantizationConfig):
     @classmethod
     def override_quantization_method(
         cls, hf_quant_cfg, user_quant
-    ) -> Optional["QuantizationMethods"]:
+    ) -> "QuantizationMethods | None":
         can_convert = cls.is_awq_marlin_compatible(hf_quant_cfg)
         is_valid_user_quant = (
             user_quant is None or user_quant == "marlin" or user_quant == "awq_marlin"
@@ -174,7 +173,7 @@ class AWQMarlinConfig(QuantizationConfig):
 
     def get_quant_method(
         self, layer: torch.nn.Module, prefix: str
-    ) -> Optional["QuantizeMethodBase"]:
+    ) -> "QuantizeMethodBase | None":
         if isinstance(layer, LinearBase) or (
             isinstance(layer, ParallelLMHead) and self.lm_head_quantized
         ):
@@ -187,10 +186,10 @@ class AWQMarlinConfig(QuantizationConfig):
                 return UnquantizedLinearMethod()
             # Check if the layer is supported by AWQMarlin.
             if not check_marlin_supports_layer(layer, self.group_size):
-                # logger.warning_once(
-                #     "Layer '%s' is not supported by AWQMarlin. Falling back to unoptimized AWQ kernels.",  # noqa: E501
-                #     prefix,
-                # )
+                logger.warning_once(
+                    "Layer '%s' is not supported by AWQMarlin. Falling back to unoptimized AWQ kernels.",  # noqa: E501
+                    prefix,
+                )
                 return AWQConfig.from_config(self.full_config).get_quant_method(
                     layer, prefix
                 )
@@ -227,8 +226,8 @@ class AWQMarlinConfig(QuantizationConfig):
         group_size = quant_config.get("group_size")
         zero_point = quant_config.get("zero_point")
 
-        # if not current_platform.is_cuda():
-        #     return False
+        if not current_platform.is_cuda():
+            return False
 
         if quant_method != "awq":
             return False
@@ -553,7 +552,7 @@ class AWQMarlinMoEMethod(FusedMoEMethodBase):
         set_weight_attrs(w2_qzeros, extra_weight_attrs)
 
         device = layer.w13_qweight.device
-        layer.workspace = marlin_make_workspace_new(device, 3)
+        layer.workspace = marlin_make_workspace_new(device, 4)
 
     def process_weights_after_loading(self, layer: torch.nn.Module) -> None:
         num_experts = layer.w13_qweight.shape[0]
@@ -612,7 +611,7 @@ class AWQMarlinMoEMethod(FusedMoEMethodBase):
 
         # Why does this take the intermediate size for size_k?
         marlin_w13_scales = marlin_moe_permute_scales(
-            s=layer.w13_scales.to(torch.float16),
+            s=layer.w13_scales,
             size_k=layer.intermediate_size_per_partition,
             size_n=layer.w13_scales.shape[2],
             group_size=self.quant_config.group_size,
@@ -627,10 +626,10 @@ class AWQMarlinMoEMethod(FusedMoEMethodBase):
                 Parameter(w13_input_global_scale, requires_grad=False),
             )
 
-        #replace_parameter(layer, "w13_scales", marlin_w13_scales)
+        replace_parameter(layer, "w13_scales", marlin_w13_scales)
 
         marlin_w2_scales = marlin_moe_permute_scales(
-            s=layer.w2_scales.to(torch.float16),
+            s=layer.w2_scales,
             size_k=layer.intermediate_size_per_partition,
             size_n=layer.w2_scales.shape[2],
             group_size=self.quant_config.group_size,
@@ -645,7 +644,7 @@ class AWQMarlinMoEMethod(FusedMoEMethodBase):
                 Parameter(w2_input_global_scale, requires_grad=False),
             )
 
-        # replace_parameter(layer, "w2_scales", marlin_w2_scales)
+        replace_parameter(layer, "w2_scales", marlin_w2_scales)
 
         marlin_w13_zp = moe_awq_to_marlin_zero_points(
             layer.w13_qzeros,
@@ -654,7 +653,7 @@ class AWQMarlinMoEMethod(FusedMoEMethodBase):
             num_bits=self.quant_config.weight_bits,
             is_a_8bit=is_a_8bit,
         )
-        # replace_parameter(layer, "w13_qzeros", marlin_w13_zp)
+        replace_parameter(layer, "w13_qzeros", marlin_w13_zp)
 
         marlin_w2_zp = moe_awq_to_marlin_zero_points(
             layer.w2_qzeros,
@@ -663,26 +662,7 @@ class AWQMarlinMoEMethod(FusedMoEMethodBase):
             num_bits=self.quant_config.weight_bits,
             is_a_8bit=is_a_8bit,
         )
-        # replace_parameter(layer, "w2_qzeros", marlin_w2_zp)
-        
-        marlin_w13_sz = awq_marlin_moe_permute_sz(
-            marlin_w13_scales,
-            marlin_w13_zp,
-            size_k=layer.w13_scales.shape[1] * self.quant_config.group_size,
-            size_n=layer.w13_scales.shape[2]
-            )
-        marlin_w2_sz = awq_marlin_moe_permute_sz(
-            marlin_w2_scales,
-            marlin_w2_zp,
-            size_k=layer.w2_scales.shape[1] * self.quant_config.group_size,
-            size_n=layer.w2_scales.shape[2]        
-            )
-        replace_parameter(layer, "w13_scales", marlin_w13_sz)
-        replace_parameter(layer, "w2_scales",  marlin_w2_sz)
-
-        layer.w13_qzeros = None 
-        layer.w2_qzeros = None    
-        torch.cuda.empty_cache()
+        replace_parameter(layer, "w2_qzeros", marlin_w2_zp)
 
         if hasattr(layer, "w13_bias") and layer.w13_bias is not None:
             layer.w13_bias.data = marlin_permute_bias(layer.w13_bias)
@@ -784,28 +764,27 @@ class AWQMarlinMoEMethod(FusedMoEMethodBase):
         x: torch.Tensor,
         topk_weights: torch.Tensor,
         topk_ids: torch.Tensor,
-        use_nn_moe: bool | None = False,
-        use_fused_gate: bool | None  = False,  
+        shared_experts_input: torch.Tensor | None,
     ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
-        return fused_marlin_moe_int4(
+        return fused_marlin_moe(
             x,
             layer.w13_qweight,
             layer.w2_qweight,
-            # getattr(layer, "w13_bias", None),
-            # getattr(layer, "w2_bias", None),
+            getattr(layer, "w13_bias", None),
+            getattr(layer, "w2_bias", None),
             layer.w13_scales,
             layer.w2_scales,
             topk_weights,
             topk_ids,
-            # input_global_scale1=getattr(layer, "w13_input_global_scale", None),
-            # input_global_scale2=getattr(layer, "w2_input_global_scale", None),
-            # quant_type_id=self.quant_type.id,
-            # apply_router_weight_on_input=layer.apply_router_weight_on_input,
+            input_global_scale1=getattr(layer, "w13_input_global_scale", None),
+            input_global_scale2=getattr(layer, "w2_input_global_scale", None),
+            quant_type_id=self.quant_type.id,
+            apply_router_weight_on_input=layer.apply_router_weight_on_input,
             global_num_experts=layer.global_num_experts,
             expert_map=layer.expert_map,
             w1_zeros=layer.w13_qzeros,
             w2_zeros=layer.w2_qzeros,
             workspace=layer.workspace,
-            # input_dtype=self.input_dtype,
-            num_bits=4,
+            input_dtype=self.input_dtype,
+            inplace=not self.moe.disable_inplace,
         )

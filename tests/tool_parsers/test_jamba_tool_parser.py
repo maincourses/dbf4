@@ -4,7 +4,6 @@
 import json
 from collections.abc import Generator
 
-import os
 import partial_json_parser
 import pytest
 from partial_json_parser.core.options import Allow
@@ -12,11 +11,9 @@ from partial_json_parser.core.options import Allow
 from vllm.entrypoints.openai.engine.protocol import DeltaMessage, FunctionCall, ToolCall
 from vllm.tokenizers import TokenizerLike, get_tokenizer
 from vllm.tokenizers.detokenizer_utils import detokenize_incrementally
-
 from vllm.tool_parsers.jamba_tool_parser import JambaToolParser
-from ..utils import models_path_prefix
 
-MODEL = os.path.join(models_path_prefix, "ai21labs/Jamba-tiny-dev")
+MODEL = "ai21labs/Jamba-tiny-dev"
 
 
 @pytest.fixture(scope="module")

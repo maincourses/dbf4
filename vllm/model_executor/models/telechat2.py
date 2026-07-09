@@ -22,12 +22,9 @@
 # limitations under the License.
 from collections.abc import Iterable
 
-import os
-import re
 import torch
 import torch.nn as nn
 
-import vllm.envs as envs
 from vllm.config import VllmConfig
 from vllm.model_executor.model_loader.weight_utils import default_weight_loader
 from vllm.model_executor.models.llama import LlamaForCausalLM, LlamaModel
@@ -39,9 +36,6 @@ from .utils import (
     WeightsMapper,
     is_pp_missing_parameter,
 )
-from vllm.utils import W8a8GetCacheJSON
-from vllm import _custom_ops as ops
-from vllm.model_executor.utils import pad_weight, gemm_bank_conf
 
 
 class TeleChat2Model(LlamaModel):
@@ -70,18 +64,6 @@ class TeleChat2Model(LlamaModel):
                 layer.self_attn.qkv_proj.skip_bias_add = True
                 layer.mlp.gate_up_proj.bias = None
                 layer.mlp.gate_up_proj.skip_bias_add = True
-                
-        self.quant_method = None
-        if vllm_config.quant_config is not None:
-            self.quant_method=vllm_config.quant_config.get_name()
-            self.quant_config=vllm_config.quant_config
-            
-        self.tritonsingleton= W8a8GetCacheJSON()      
-        self.use_llama_nn = os.environ.get('LLAMA_NN') == '1'
-        self.use_gemm_pad = os.environ.get('GEMM_PAD') == '1'
-        self.use_fa_pad = os.environ.get('FA_PAD') == '1'
-        self.use_awq_pad = os.environ.get('AWQ_PAD') == '1'
-        self.w8a8_strategy = envs.VLLM_W8A8_BACKEND
 
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
         stacked_params_mapping = [
@@ -93,9 +75,6 @@ class TeleChat2Model(LlamaModel):
         total_num_heads = self.config.n_head
         head_dim = self.config.hidden_size // total_num_heads
         for name, loaded_weight in weights:
-            if self.use_llama_nn:
-                current_count = loaded_weight.current_count 
-                total_count = loaded_weight.total_count
             if "self_attn.key_value" in name:
                 k_weight = []
                 v_weight = []
@@ -141,47 +120,6 @@ class TeleChat2Model(LlamaModel):
                     )
                     weight_loader(param, loaded_weight)
             loaded_params.add(name)
-        
-        if self.use_llama_nn and self.quant_method is None and current_count==total_count:
-            lay_key_words = [
-                "self_attn.qkv_proj.weight",
-                "self_attn.o_proj.weight",
-                "mlp.gate_up_proj.weight",
-                "mlp.down_proj.weight",
-            ]
-            combined_words = "|".join(lay_key_words)
-            
-            # lay_qkv_words = ["self_attn.qkv_proj.weight"]   
-            # qkv_words = "|".join(lay_qkv_words)          
-            
-            # for layername, weight in params_dict.items():
-            # for layername in loaded_params:
-            for layername in params_dict.keys():
-                weight = params_dict[layername]
-                if "lm_head.weight" in layername and weight.shape[1] >= 4096:
-                    lay_key_words.append("lm_head.weight")
-                    combined_words = "|".join(lay_key_words)
-                    os.environ['LM_NN'] = '1'  
-                else:
-                    os.environ['LM_NN'] = '0' 
-                    
-                matches = re.findall(combined_words, layername)
-                
-                if matches:         
-                    # if self.use_gemm_pad and gemm_bank_conf(weight.data.shape[0]):
-                    #     weight.data = pad_weight(weight.data, 32)  
-                        
-                    # if self.use_fa_pad and (re.findall(qkv_words, layername)):
-                    #     if not gemm_bank_conf(weight.data.shape[0]):
-                    #         weight.data = pad_weight(weight.data, 32)
-                                 
-                    _weight = torch.zeros_like(weight.data)
-                    ori_shape =_weight.shape
-                    
-                    ops.trans_w16_gemm(_weight, weight.data, _weight.shape[0], _weight.shape[1])
-                    weight.data.copy_(_weight)
-                    
-                    weight.data=weight.data.reshape(ori_shape[1], -1)
         return loaded_params
 
 

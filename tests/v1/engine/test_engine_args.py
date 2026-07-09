@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
-import os
 from argparse import ArgumentError
 
 import pytest
@@ -11,7 +10,6 @@ from vllm.engine.arg_utils import EngineArgs
 from vllm.usage.usage_lib import UsageContext
 from vllm.utils.argparse_utils import FlexibleArgumentParser
 from vllm.utils.hashing import _xxhash
-from ...utils import models_path_prefix
 
 
 def test_prefix_caching_from_cli():
@@ -67,7 +65,7 @@ def test_prefix_caching_xxhash_from_cli():
 
 
 def test_defaults_with_usage_context():
-    engine_args = EngineArgs(model=os.path.join(models_path_prefix, "facebook/opt-125m"))
+    engine_args = EngineArgs(model="facebook/opt-125m")
     vllm_config: VllmConfig = engine_args.create_engine_config(UsageContext.LLM_CLASS)
 
     from vllm.platforms import current_platform

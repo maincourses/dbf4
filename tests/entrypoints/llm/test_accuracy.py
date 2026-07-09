@@ -9,27 +9,25 @@ sure that the zmq frontend mp RPC message passing and
 AsyncLLMEngine are working correctly.
 """
 
-import os
 import lm_eval
 import pytest
 
 from vllm.platforms import current_platform
-from ...utils import models_path_prefix
 
 MODEL_NAMES = [
-    os.path.join(models_path_prefix, "Qwen/Qwen3-1.7B"),
-    os.path.join(models_path_prefix, "google/gemma-3-1b-it"),
+    "Qwen/Qwen3-1.7B",
+    "google/gemma-3-1b-it",
 ]
 FP8_KV_MODEL_NAMES = [
-    os.path.join(models_path_prefix, "Qwen/Qwen3-1.7B"),
+    "Qwen/Qwen3-1.7B",
 ]
 NUM_CONCURRENT = 500
 TASK = "gsm8k"
 FILTER = "exact_match,strict-match"
 RTOL = 0.03
 EXPECTED_VALUES = {
-    os.path.join(models_path_prefix, "Qwen/Qwen3-1.7B"): 0.68,
-    os.path.join(models_path_prefix, "google/gemma-3-1b-it"): 0.25,
+    "Qwen/Qwen3-1.7B": 0.68,
+    "google/gemma-3-1b-it": 0.25,
 }
 
 

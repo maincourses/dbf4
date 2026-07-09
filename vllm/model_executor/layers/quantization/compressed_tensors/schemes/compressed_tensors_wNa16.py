@@ -7,15 +7,13 @@ import torch
 from compressed_tensors.quantization import ActivationOrdering
 
 from vllm.logger import init_logger
-from vllm.model_executor.layers.quantization.compressed_tensors.schemes import (
-    CompressedTensorsScheme,
-)
-from vllm.model_executor.layers.quantization.kernels.mixed_precision import (
+from vllm.model_executor.kernels.linear import (
+    MarlinLinearKernel,
     MPLinearLayerConfig,
     choose_mp_linear_kernel,
 )
-from vllm.model_executor.layers.quantization.kernels.mixed_precision.marlin import (
-    MarlinLinearKernel,
+from vllm.model_executor.layers.quantization.compressed_tensors.schemes import (
+    CompressedTensorsScheme,
 )
 from vllm.model_executor.layers.quantization.utils.marlin_utils import (
     get_marlin_input_dtype,
@@ -225,6 +223,6 @@ class CompressedTensorsWNA16(CompressedTensorsScheme):
         self.kernel.process_weights_after_loading(layer)
 
     def apply_weights(
-        self, layer: torch.nn.Module, x: torch.Tensor, bias: torch.Tensor | None, **kw
+        self, layer: torch.nn.Module, x: torch.Tensor, bias: torch.Tensor | None
     ) -> torch.Tensor:
         return self.kernel.apply_weights(layer, x, bias)

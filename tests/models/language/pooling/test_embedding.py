@@ -1,13 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
-import os
 import pytest
 
 from vllm.config import PoolerConfig
-
-from ....utils import models_path_prefix
-from vllm.platforms import current_platform
 
 from ...utils import check_embeddings_close
 
@@ -21,37 +17,34 @@ from ...utils import check_embeddings_close
         # model code with bidirectional attention.
         # [Decoder-only]
         pytest.param(
-            (os.path.join(models_path_prefix, "BAAI/bge-multilingual-gemma2"),
+            "BAAI/bge-multilingual-gemma2",
             marks=[pytest.mark.core_model, pytest.mark.slow_test],
         ),
         pytest.param(
-            (os.path.join(models_path_prefix, "intfloat/e5-mistral-7b-instruct"),
+            "intfloat/e5-mistral-7b-instruct",
             marks=[pytest.mark.core_model, pytest.mark.cpu_model],
         ),
         pytest.param(
-            (os.path.join(models_path_prefix, "ssmits/Qwen2-7B-Instruct-embed-base"), marks=[pytest.mark.cpu_model]
+            "ssmits/Qwen2-7B-Instruct-embed-base", marks=[pytest.mark.cpu_model]
         ),
         # [Encoder-only]
         pytest.param(
-            os.path.join(models_path_prefix, "BAAI/bge-base-en-v1.5"),
+            "BAAI/bge-base-en-v1.5",
             marks=[
                 pytest.mark.core_model,
                 pytest.mark.cpu_model,
                 pytest.mark.slow_test,
             ],
         ),
-        pytest.param(os.path.join(models_path_prefix, "sentence-transformers/all-MiniLM-L12-v2")),
-        pytest.param(os.path.join(models_path_prefix, "intfloat/multilingual-e5-small")),
+        pytest.param("sentence-transformers/all-MiniLM-L12-v2"),
+        pytest.param("intfloat/multilingual-e5-small"),
         # [Cross-Encoder]
         pytest.param(
-            os.path.join(models_path_prefix, "sentence-transformers/stsb-roberta-base-v2"),
+            "sentence-transformers/stsb-roberta-base-v2",
             marks=[pytest.mark.core_model, pytest.mark.cpu_model],
         ),
     ],
 )
-
-# @pytest.mark.skipif(current_platform.is_rocm(),
-#                     reason="Consistent with NV.")
 def test_models(
     hf_runner,
     vllm_runner,
@@ -59,15 +52,15 @@ def test_models(
     model,
 ) -> None:
     vllm_extra_kwargs = {}
-    if model == (os.path.join(models_path_prefix, "ssmits/Qwen2-7B-Instruct-embed-base"):
+    if model == "ssmits/Qwen2-7B-Instruct-embed-base":
         vllm_extra_kwargs["pooler_config"] = PoolerConfig(
-            seq_pooling_type="MEAN", normalize=False
+            seq_pooling_type="MEAN", use_activation=False
         )
 
     max_model_len: int | None = 512
     if model in [
-        (os.path.join(models_path_prefix, "sentence-transformers/all-MiniLM-L12-v2"),
-        (os.path.join(models_path_prefix, "sentence-transformers/stsb-roberta-base-v2"),
+        "sentence-transformers/all-MiniLM-L12-v2",
+        "sentence-transformers/stsb-roberta-base-v2",
     ]:
         max_model_len = None
 

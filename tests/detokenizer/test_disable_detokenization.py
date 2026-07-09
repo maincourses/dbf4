@@ -1,17 +1,13 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
-import os
 import pytest
 
 from vllm.entrypoints.llm import LLM
 from vllm.sampling_params import SamplingParams
-from ..utils import models_path_prefix
-from vllm.platforms import current_platform
 
 
-@pytest.mark.skip_v1
-@pytest.mark.parametrize("model", [os.path.join(models_path_prefix, "distilbert/distilgpt2")])
+@pytest.mark.parametrize("model", ["distilbert/distilgpt2"])
 def test_computed_prefix_blocks(model: str):
     # This test checks if the engine generates completions both with and
     # without optional detokenization, that detokenization includes text
@@ -23,7 +19,7 @@ def test_computed_prefix_blocks(model: str):
         "online for free?"
     )
 
-    llm = LLM(model=model, block_size=64 if current_platform.is_rocm() else 16)
+    llm = LLM(model=model)
     sampling_params = SamplingParams(max_tokens=10, temperature=0.0, detokenize=False)
 
     outputs_no_detokenization = llm.generate(prompt, sampling_params)[0].outputs[0]

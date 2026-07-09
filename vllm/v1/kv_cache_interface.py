@@ -98,7 +98,7 @@ class FullAttentionSpec(AttentionSpec):
     In this case, we use FullAttentionSpec and record the sliding window size.
     """
 
-    head_size_v: int | None = None
+    head_size_v: int = None  # type: ignore[assignment]
 
     sliding_window: int | None = None
     """
@@ -185,32 +185,6 @@ class FullAttentionSpec(AttentionSpec):
             * (self.head_size + self.head_size_v)
             * get_dtype_size(self.dtype)
         )
-
-
-@dataclass(frozen=True, kw_only=True)
-class TQFullAttentionSpec(FullAttentionSpec):
-    """FullAttentionSpec with TQ-aware page size.
-
-    Python equivalent of the C++ TQ4FullAttentionSpec. Overrides
-    real_page_size_bytes to use TQ slot bytes instead of the raw
-    head_size * dtype formula.
-    """
-
-    tq_slot_size: int = 0
-
-    @property
-    def real_page_size_bytes(self) -> int:
-        if self.tq_slot_size > 0:
-            return self.block_size * self.num_kv_heads * self.tq_slot_size
-        return super().real_page_size_bytes
-
-    @classmethod
-    def merge(cls, specs: list[Self]) -> Self:
-        merged = super().merge(specs)
-        assert all(s.tq_slot_size == specs[0].tq_slot_size for s in specs), (
-            "All TQ layers in the same KV cache group must use the same tq_slot_size."
-        )
-        return replace(merged, tq_slot_size=specs[0].tq_slot_size)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -515,3 +489,11 @@ class KVCacheConfig:
     For models with multiple types of attention, there will be multiple groups,
     see `_get_kv_cache_config_uniform_page_size` for more details.
     """
+
+    @property
+    def has_mamba_layers(self) -> bool:
+        return any(isinstance(g.kv_cache_spec, MambaSpec) for g in self.kv_cache_groups)
+
+    @property
+    def needs_kv_cache_zeroing(self) -> bool:
+        return self.has_mamba_layers

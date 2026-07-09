@@ -6,7 +6,6 @@ import json
 from enum import Enum
 from typing import Any
 
-import os
 import jsonschema
 import pytest
 import regex as re
@@ -24,7 +23,6 @@ from vllm.sampling_params import (
     SamplingParams,
     StructuredOutputsParams,
 )
-from ....utils import models_path_prefix
 
 NGRAM_SPEC_CONFIG = {
     "model": "[ngram]",
@@ -40,14 +38,14 @@ EAGLE_SPEC_CONFIG = {
 }
 
 PARAMS_MODELS_BACKENDS_TOKENIZER_MODE = [
-    (os.path.join(models_path_prefix, "mistralai/Ministral-8B-Instruct-2410"), "xgrammar", "auto", None),
+    ("mistralai/Ministral-8B-Instruct-2410", "xgrammar", "auto", None),
     # FIXME: Since "auto" will use Mistral tokenizer and these backends do not support
     # it, we skip these tests for now.
     # ("mistralai/Ministral-8B-Instruct-2410", "guidance", "auto", None),
     # ("mistralai/Ministral-8B-Instruct-2410", "lm-format-enforcer", "auto", None),
-    (os.path.join(models_path_prefix, "mistralai/Ministral-8B-Instruct-2410"), "guidance", "hf", None),
+    ("mistralai/Ministral-8B-Instruct-2410", "guidance", "hf", None),
     pytest.param(
-        os.path.join(models_path_prefix, "mistralai/Ministral-8B-Instruct-2410"),
+        "mistralai/Ministral-8B-Instruct-2410",
         "lm-format-enforcer",
         "hf",
         None,
@@ -59,10 +57,10 @@ PARAMS_MODELS_BACKENDS_TOKENIZER_MODE = [
             )
         ),
     ),
-    (os.path.join(models_path_prefix, "mistralai/Ministral-8B-Instruct-2410"), "xgrammar", "mistral", None),
-    (os.path.join(models_path_prefix, "Qwen/Qwen2.5-1.5B-Instruct"), "xgrammar", "auto", None),
+    ("mistralai/Ministral-8B-Instruct-2410", "xgrammar", "mistral", None),
+    ("Qwen/Qwen2.5-1.5B-Instruct", "xgrammar", "auto", None),
     pytest.param(
-        os.path.join(models_path_prefix, "Qwen/Qwen2.5-1.5B-Instruct"),
+        "Qwen/Qwen2.5-1.5B-Instruct",
         "lm-format-enforcer",
         "auto",
         None,
@@ -78,15 +76,15 @@ PARAMS_MODELS_BACKENDS_TOKENIZER_MODE = [
     # ("mistralai/Ministral-8B-Instruct-2410", "outlines", "auto", None),
     # ("mistralai/Ministral-8B-Instruct-2410", "outlines", "mistral", None),
     # ("Qwen/Qwen2.5-1.5B-Instruct", "guidance", "auto"),
-    (os.path.join(models_path_prefix, "mistralai/Ministral-8B-Instruct-2410"), "outlines", "auto", NGRAM_SPEC_CONFIG),
-    (os.path.join(models_path_prefix, "mistralai/Ministral-8B-Instruct-2410"), "guidance", "hf", NGRAM_SPEC_CONFIG),
-    (os.path.join(models_path_prefix, "Qwen/Qwen2.5-1.5B-Instruct"), "xgrammar", "auto", NGRAM_SPEC_CONFIG),
-    (os.path.join(models_path_prefix, "meta-llama/Meta-Llama-3.1-8B-Instruct"), "xgrammar", "auto", EAGLE_SPEC_CONFIG),
+    ("mistralai/Ministral-8B-Instruct-2410", "outlines", "auto", NGRAM_SPEC_CONFIG),
+    ("mistralai/Ministral-8B-Instruct-2410", "guidance", "hf", NGRAM_SPEC_CONFIG),
+    ("Qwen/Qwen2.5-1.5B-Instruct", "xgrammar", "auto", NGRAM_SPEC_CONFIG),
+    ("meta-llama/Meta-Llama-3.1-8B-Instruct", "xgrammar", "auto", EAGLE_SPEC_CONFIG),
 ]
 
 PARAMS_MODELS_TOKENIZER_MODE = [
-    (os.path.join(models_path_prefix, "mistralai/Ministral-8B-Instruct-2410"), "auto"),
-    (os.path.join(models_path_prefix, "Qwen/Qwen2.5-1.5B-Instruct"), "auto"),
+    ("mistralai/Ministral-8B-Instruct-2410", "auto"),
+    ("Qwen/Qwen2.5-1.5B-Instruct", "auto"),
 ]
 
 platform_args = {}
@@ -859,7 +857,7 @@ def test_structured_output_batched_with_non_structured_outputs_requests(
     # Free memory as soon as possible as failed assertions
     # will short circuit and not free up memory
     del llm
-    torch.cuda.empty_cache()
+    torch.accelerator.empty_cache()
     cleanup_dist_env_and_memory()
 
     for index, output in enumerate(outputs):
@@ -913,7 +911,7 @@ def test_structured_output_with_structural_tag(backend: str):
         ),
     )
 
-    prompt = "Hello and repete hello 10 times, do not say anything else. Only say hello hello hello, now start"
+    prompt = "Hello and repeat hello 10 times, do not say anything else. Only say hello hello hello, now start"
     outputs = llm.generate(prompt, sampling_params=sampling_params, use_tqdm=True)
     assert outputs is not None
     for output in outputs:

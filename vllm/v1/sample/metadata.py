@@ -40,9 +40,5 @@ class SamplingMetadata:
     # Loaded logits processors
     logitsprocs: LogitsProcessors
 
-    # Optional host-side summaries for top-k fast paths.
-    max_top_k: int | None = None
-    has_any_no_top_k: bool = False
-
     # Speculative token ids
     spec_token_ids: list[list[int]] | None = None

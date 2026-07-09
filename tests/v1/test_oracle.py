@@ -4,13 +4,11 @@ import pytest
 
 from vllm.engine.arg_utils import AsyncEngineArgs
 
-from ..utils import models_path_prefix
-
-MODEL = os.path.join(models_path_prefix, "meta-llama/Llama-3.2-1B-Instruct")
+MODEL = "meta-llama/Llama-3.2-1B-Instruct"
 
 
 def test_unsupported_configs():
-    with pytest.raises(NotImplementedError):
+    with pytest.raises(ValueError):
         AsyncEngineArgs(
             model=MODEL,
             speculative_config={

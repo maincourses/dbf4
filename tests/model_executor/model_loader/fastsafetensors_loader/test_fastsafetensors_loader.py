@@ -1,15 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
-import os
 import pytest
 
 from vllm import SamplingParams
 from vllm.platforms import current_platform
 
-from ..utils import models_path_prefix
-
-test_model = os.path.join(models_path_prefix, "openai-community/gpt2")
+test_model = "openai-community/gpt2"
 
 prompts = [
     "Hello, my name is",

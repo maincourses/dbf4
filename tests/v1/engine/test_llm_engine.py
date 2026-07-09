@@ -3,20 +3,18 @@
 import random
 from typing import TYPE_CHECKING
 
-import os
 import pytest
 
 from vllm import LLM
 from vllm.sampling_params import SamplingParams, StructuredOutputsParams
 from vllm.v1.metrics.reader import Counter, Gauge, Histogram, Metric, Vector
-from ...utils import models_path_prefix
 
 if TYPE_CHECKING:
     from tests.conftest import VllmRunner
 else:
     VllmRunner = object
 
-MODEL = os.path.join(models_path_prefix, "facebook/opt-125m")
+MODEL = "facebook/opt-125m"
 DTYPE = "half"
 
 

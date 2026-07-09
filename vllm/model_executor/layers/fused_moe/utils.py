@@ -2,11 +2,8 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 import functools
 from math import prod
-from typing import Optional
 
 import torch
-import torch.nn.functional as F
-from triton.language.extra import libdevice
 
 from vllm import _custom_ops as ops
 from vllm.model_executor.layers.quantization.utils.fp8_utils import (
@@ -16,13 +13,6 @@ from vllm.model_executor.layers.quantization.utils.int8_utils import (
     per_token_group_quant_int8,
     per_token_quant_int8,
 )
-
-try:
-    from lmslim.layers.gemm.int8_utils import (
-        per_token_group_quant_int8, per_token_quant_int8)
-except Exception:
-    print("INFO: Please install lmslim if you want to use int utils.\n") 
-    
 from vllm.model_executor.layers.quantization.utils.mxfp4_utils import (
     quant_dequant_mxfp4,
 )
@@ -32,11 +22,12 @@ from vllm.model_executor.layers.quantization.utils.mxfp6_utils import (
 from vllm.model_executor.layers.quantization.utils.mxfp8_utils import (
     mxfp8_e4m3_quantize,
 )
+from vllm.model_executor.layers.quantization.utils.w8a8_utils import (
+    per_tensor_dequantize,
+)
 from vllm.triton_utils import tl, triton
 from vllm.utils.math_utils import cdiv
 from vllm.utils.torch_utils import is_torch_equal_or_newer
-import vllm.envs as envs
-from lightop import fuse_silu_and_mul
 
 
 @triton.jit
@@ -156,147 +147,11 @@ def _fp8_quantize(
     return A, A_scale
 
 
-@triton.jit
-def _per_token_quant_int8_one_kernel_opt(
-    x_ptr,
-    xq_ptr,
-    scale_ptr,
-    stride_x,
-    stride_xq,
-    N, 
-    T_dim, 
-    has_tokens_per_expert: tl.constexpr,
-    tokens_per_expert_ptr, 
-    BLOCK: tl.constexpr
-):
-    row_id = tl.program_id(0)
-
-    if has_tokens_per_expert:
-        e = row_id // T_dim
-        t = row_id % T_dim
-        
-        num_valid_tokens_for_e = tl.load(tokens_per_expert_ptr + e)
-        
-        if t >= num_valid_tokens_for_e:
-            return
-
-    cols = tl.arange(0, BLOCK)
-    mask = cols < N
-
-    x = tl.load(x_ptr + row_id * stride_x + cols, mask=mask,
-                other=0.0).to(tl.float32)
-    absmax = tl.maximum(tl.max(tl.abs(x)), 1e-10)
-    scale_x = absmax / 127
-    x_q = x * (127 / absmax)
-    x_q = libdevice.nearbyint(x_q).to(tl.int8)
-
-    tl.store(xq_ptr + row_id * stride_xq + cols, x_q, mask=mask)
-    tl.store(scale_ptr + row_id, scale_x)
-
-@triton.jit
-def _per_token_quant_int8_kernel_opt(
-    x_ptr,
-    xq_ptr,
-    scale_ptr,
-    stride_x,
-    stride_xq,
-    N, 
-    E_dim,
-    T_dim,
-    has_tokens_per_expert: tl.constexpr,
-    tokens_per_expert_ptr, 
-    BLOCK: tl.constexpr
-):
-    token_idx_start = tl.program_id(0)
-    grid_size = tl.num_programs(0) 
-    num_total_tokens = E_dim * T_dim
-
-    for token_idx in range(token_idx_start, num_total_tokens, grid_size):
-        
-        is_valid_token = True
-        if has_tokens_per_expert:
-            e = token_idx // T_dim
-            t = token_idx % T_dim
-            
-            num_valid_tokens_for_e = tl.load(tokens_per_expert_ptr + e)
-            
-            if t >= num_valid_tokens_for_e:
-                is_valid_token = False 
-
-        if is_valid_token:
-            cols = tl.arange(0, BLOCK)
-            mask = cols < N
-
-            x = tl.load(x_ptr + token_idx * stride_x + cols, mask=mask,
-                        other=0.0).to(tl.float32)
-            absmax = tl.maximum(tl.max(tl.abs(x)), 1e-10)
-            scale_x = absmax / 127
-            x_q = x * (127 / absmax)
-            x_q = libdevice.nearbyint(x_q).to(tl.int8)
-
-            tl.store(xq_ptr + token_idx * stride_xq + cols, x_q, mask=mask)
-            tl.store(scale_ptr + token_idx, scale_x)
-
-
-def per_token_quant_int8_triton_opt(x: torch.Tensor,
-                                    tokens_per_expert: Optional[torch.Tensor] = None):
-    if x.dim() != 3:
-        raise ValueError(f"Input must be 3D [E, T, H], but got {x.shape}")
-    E, T, H = x.shape
-    N = H
-    
-    x_q = torch.empty_like(x, device=x.device, dtype=torch.int8)
-    scales = torch.empty(x.shape[:-1] + (1, ),
-                         device=x.device,
-                         dtype=torch.float32)
-    BLOCK = triton.next_power_of_2(N)
-    num_warps = min(max(BLOCK // 256, 1), 8)
-    if T >= 4096:
-        num_warps = 1
-    
-    num_tokens = E * T
-    grid_opt = num_tokens
-    if E == 16 and T >= 1024 :
-        grid_opt = max(1, num_tokens // (T // 256))
-        _per_token_quant_int8_kernel_opt[(grid_opt, )](
-            x,
-            x_q,
-            scales,
-            stride_x=x.stride(-2),
-            stride_xq=x_q.stride(-2),
-            N=N,
-            E_dim=E,
-            T_dim=T,
-            has_tokens_per_expert=tokens_per_expert is not None,
-            tokens_per_expert_ptr=tokens_per_expert,
-            BLOCK=BLOCK,
-            num_warps=num_warps,
-            num_stages=1,
-        )
-    else:
-        _per_token_quant_int8_one_kernel_opt[(grid_opt, )](
-            x,
-            x_q,
-            scales,
-            stride_x=x.stride(-2),
-            stride_xq=x_q.stride(-2),
-            N=N,
-            T_dim=T,
-            has_tokens_per_expert=tokens_per_expert is not None,
-            tokens_per_expert_ptr=tokens_per_expert,
-            BLOCK=BLOCK,
-            num_warps=num_warps,
-            num_stages=1,
-        )
-    return x_q, scales
-
-
 def _int8_quantize(
     A: torch.Tensor,
     A_scale: torch.Tensor | None,
     per_act_token: bool,
     block_shape: list[int] | None = None,
-    expert_num_tokens: Optional[torch.Tensor] = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """
     Perform int8 quantization on the inputs.  If a block_shape
@@ -306,12 +161,9 @@ def _int8_quantize(
     # If weights are per-channel (per_channel_quant=True), then
     # activations apply per-token quantization. Otherwise, assume
     # activation tensor-wise fp8/int8 quantization, dynamic or static
-    if block_shape is None or per_act_token:
+    if block_shape is None:
         assert per_act_token, "int8 quantization only supports block or channel-wise"
-        if expert_num_tokens is None:   
-            A, A_scale = per_token_quant_int8(A)
-        else:
-            A, A_scale = per_token_quant_int8_triton_opt(A, expert_num_tokens)
+        A, A_scale = per_token_quant_int8(A)
     else:
         assert not per_act_token
         assert len(block_shape) == 2
@@ -343,11 +195,12 @@ def _mxfp8_e4m3_quantize(
     A_scale: torch.Tensor | None,
     per_act_token_quant: bool,
     block_shape: list[int] | None = None,
+    is_sf_swizzled_layout: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     assert A_scale is None
     assert not per_act_token_quant
     assert block_shape is None
-    return mxfp8_e4m3_quantize(A)
+    return mxfp8_e4m3_quantize(A, is_sf_swizzled_layout)
 
 
 def _mxfp6_e3m2_quantize(
@@ -391,7 +244,27 @@ def moe_kernel_quantize_input(
     per_act_token_quant: bool,
     block_shape: list[int] | None = None,
     is_fp4_scale_swizzled: bool = True,
+    ocp_mx_scheme: str | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor | None]:
+    # Handle OCP MX scheme that requires QDQ (quantize-dequantize) for emulation
+    if ocp_mx_scheme is not None:
+        if ocp_mx_scheme in {"w_mxfp4", "w_mxfp4_a_mxfp4"}:
+            pass  # No QDQ needed for these schemes
+        elif ocp_mx_scheme.endswith("a_fp8"):
+            # Perform QDQ (quantize and dequantize) on activation for emulation
+            # purpose, because there is no native kernel for weight in ocp_mx_scheme
+            # and activation in FP8. The implementation is based on existing
+            # non-emulation ops.
+            qA, qA_scale = ops.scaled_fp8_quant(
+                A, A_scale, use_per_token_if_dynamic=False
+            )
+            A = per_tensor_dequantize(qA, qA_scale).to(A.dtype)
+            # After QDQ, we don't need further quantization
+            return A, None
+        # else: For other schemes (e.g., *_a_mxfp6_e3m2, *_a_mxfp6_e2m3),
+        # weights are already dequantized, and we proceed with normal
+        # activation quantization below.
+
     if quant_dtype == torch.float8_e4m3fn:
         return _fp8_quantize(A, A_scale, per_act_token_quant, block_shape)
     elif quant_dtype == torch.int8:
@@ -403,23 +276,19 @@ def moe_kernel_quantize_input(
     elif quant_dtype == "mxfp8":
         # TODO: `quant_dtype == "mxfp8"` is ambiguous,
         # should be fp8_e4m3. OCP MX also defines `fp8_e5m2`.
-        return _mxfp8_e4m3_quantize(A, A_scale, per_act_token_quant, block_shape)
+        return _mxfp8_e4m3_quantize(
+            A,
+            A_scale,
+            per_act_token_quant,
+            block_shape,
+            is_sf_swizzled_layout=is_fp4_scale_swizzled,
+        )
     elif quant_dtype == "mxfp6_e3m2":
         return _mxfp6_e3m2_quantize(A, A_scale, per_act_token_quant, block_shape)
     elif quant_dtype == "mxfp6_e2m3":
         return _mxfp6_e2m3_quantize(A, A_scale, per_act_token_quant, block_shape)
     else:
         return A, A_scale
-
-
-def _fp8_perm(m: torch.Tensor, idx: torch.Tensor) -> torch.Tensor:
-    """
-    A permutation routine that works on fp8 types.
-    """
-    if torch.is_floating_point(m) and m.dtype.itemsize == 1:
-        return m.view(dtype=torch.uint8)[idx, ...].view(dtype=m.dtype)
-    else:
-        return m[idx, ...]
 
 
 def normalize_scales_shape(scales: torch.Tensor | None) -> torch.Tensor | None:
@@ -466,68 +335,6 @@ def _validate_scale_shape(
         assert block_shape is not None
         expected = (a.shape[0], cdiv(a.shape[1], block_shape[1]))
         assert a_scale.shape == expected, f"{a_scale.shape} == {expected}"
-
-
-def activation_without_mul(activation: str) -> str:
-    return activation + "_no_mul"
-
-
-RELU2_NO_MUL: str = activation_without_mul("relu2")
-SILU_NO_MUL: str = activation_without_mul("silu")
-GELU_NO_MUL: str = activation_without_mul("gelu")
-
-
-def apply_moe_activation(
-    activation: str,
-    output: torch.Tensor,
-    input: torch.Tensor,
-) -> torch.Tensor:
-    """
-    Apply MoE activation function.
-
-    For *_and_mul activations (silu, gelu, swigluoai):
-        - Expects output.size(-1) * 2 == input.size(-1)
-
-    For *_no_mul activations (silu_no_mul, gelu_no_mul, relu2_no_mul):
-        - Expects output.size(-1) == input.size(-1)
-    """
-    is_no_mul = activation.endswith("_no_mul")
-    if is_no_mul:
-        assert output.size(-1) == input.size(-1), (
-            f"{activation} expects equal sizes: {output.size(-1)} vs {input.size(-1)}"
-        )
-    else:
-        assert output.size(-1) * 2 == input.size(-1), (
-            f"{activation} expects 2x ratio: {output.size(-1) * 2} vs {input.size(-1)}"
-        )
-
-    # Activations with gated multiplication (gate × activation(up))
-    if activation == "silu":
-        if envs.VLLM_USE_FUSE_SILU_AND_MUL and input.dtype == torch.float16:
-            fuse_silu_and_mul(output, input)
-        else:
-            torch.ops._C.silu_and_mul(output, input)
-    elif activation == "gelu":
-        torch.ops._C.gelu_and_mul(output, input)
-    elif activation == "swigluoai":
-        torch.ops._C.swigluoai_and_mul(output, input)
-    elif activation == "swiglustep":
-        from vllm.model_executor.layers.activation import swiglustep_and_mul_triton
-
-        swiglustep_and_mul_triton(output, input)
-
-    # Activations without gated multiplication
-    elif activation == SILU_NO_MUL:
-        output.copy_(F.silu(input))
-    elif activation == GELU_NO_MUL:
-        output.copy_(F.gelu(input))
-    elif activation == RELU2_NO_MUL:
-        F.relu(input, inplace=True)
-        torch.square(input, out=output)
-    else:
-        raise ValueError(f"Unsupported FusedMoe activation: {activation}")
-
-    return output
 
 
 # Torch custom ops can't deal with outputs aliasing inputs so we need to

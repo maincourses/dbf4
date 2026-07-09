@@ -1,16 +1,14 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
-import os
 import pytest
 
 from vllm import SamplingParams
 from vllm.config.load import LoadConfig
 from vllm.model_executor.model_loader import get_model_loader
-from ..utils import models_path_prefix
 
 load_format = "runai_streamer"
-test_model = os.path.join(models_path_prefix, "openai-community/gpt2")
+test_model = "openai-community/gpt2"
 # TODO(amacaskill): Replace with a GKE owned GCS bucket.
 test_gcs_model = "gs://vertex-model-garden-public-us/codegemma/codegemma-2b/"
 
@@ -40,6 +38,10 @@ def test_runai_model_loader_download_files(vllm_runner):
         assert deserialized_outputs
 
 
+@pytest.mark.skip(
+    reason="Temporarily disabled due to GCS access issues. "
+    "TODO: Re-enable this test once the underlying issue is resolved."
+)
 def test_runai_model_loader_download_files_gcs(
     vllm_runner, monkeypatch: pytest.MonkeyPatch
 ):

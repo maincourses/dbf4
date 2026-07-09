@@ -1,11 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
-import os
 import pytest
 
 from ..conftest import IMAGE_ASSETS
-from ..utils import models_path_prefix
 
 HF_IMAGE_PROMPTS = IMAGE_ASSETS.prompts(
     {
@@ -14,7 +12,7 @@ HF_IMAGE_PROMPTS = IMAGE_ASSETS.prompts(
     }
 )
 
-models = [os.path.join(models_path_prefix, "llava-hf/llava-1.5-7b-hf")]
+models = ["llava-hf/llava-1.5-7b-hf"]
 
 
 @pytest.mark.parametrize("model", models)
@@ -24,7 +22,11 @@ def test_context_length_too_short(vllm_runner, image_assets, model):
     with pytest.raises(ValueError, match="longer than the maximum model length"):
         vllm_model = vllm_runner(
             model,
-            max_model_len=128,  # LLaVA has a feature size of 576
+            # LLaVA has a feature size of 576
+            # For the HF processor to execute successfully but still
+            # failing the overall context length check, we need the
+            # max_model_len to at least contain all image tokens
+            max_model_len=579,
             enforce_eager=True,
             load_format="dummy",
         )

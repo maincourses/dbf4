@@ -1,13 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
-import os
 import pytest
 
 from vllm import LLM
-from ...utils import models_path_prefix
 
-MODEL = os.path.join(models_path_prefix, "hmellor/tiny-random-LlamaForCausalLM")
+MODEL = "hmellor/tiny-random-LlamaForCausalLM"
 PROMPT = "Hello my name is Robert and I"
 
 

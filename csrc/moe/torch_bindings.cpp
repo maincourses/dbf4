@@ -21,9 +21,6 @@ TORCH_LIBRARY_EXPAND(TORCH_EXTENSION_NAME, m) {
   m.def("moe_sum(Tensor input, Tensor! output) -> ()");
   m.impl("moe_sum", torch::kCUDA, &moe_sum);
 
-  m.def("moe_sum_opt1(Tensor input, Tensor! output) -> ()");
-  m.impl("moe_sum_opt1", torch::kCUDA, &moe_sum_opt1);
-
   // Aligning the number of tokens to be processed by each expert such
   // that it is divisible by the block size.
   m.def(
@@ -33,12 +30,6 @@ TORCH_LIBRARY_EXPAND(TORCH_EXTENSION_NAME, m) {
       "                     Tensor! num_tokens_post_pad,"
       "                     Tensor? maybe_expert_map) -> ()");
   m.impl("moe_align_block_size", torch::kCUDA, &moe_align_block_size);
-
-  m.def(
-      "moe_fused_gate(Tensor input, Tensor bias, int num_expert_group, int topk_group, int topk, int "
-      "n_share_experts_fusion, float routed_scaling_factor) -> "
-      "(Tensor[])");
-  m.impl("moe_fused_gate", torch::kCUDA, &moe_fused_gate);
 
   // Aligning the number of tokens to be processed by each expert such
   // that it is divisible by the block size, but for the batched case.
@@ -108,9 +99,9 @@ TORCH_LIBRARY_EXPAND(TORCH_EXTENSION_NAME, m) {
       "moe_permute(Tensor input, Tensor topk_ids,"
       "Tensor token_expert_indices, Tensor? expert_map, int n_expert,"
       "int n_local_expert,"
-      "int topk, int? align_block_size,Tensor! permuted_input, Tensor! "
+      "int topk, Tensor! permuted_input, Tensor! "
       "expert_first_token_offset, Tensor! inv_permuted_idx, Tensor! "
-      "permuted_idx, Tensor! m_indices)->()");
+      "permuted_idx)->()");
 
   m.def(
       "moe_unpermute(Tensor permuted_hidden_states, Tensor topk_weights,"
@@ -133,6 +124,14 @@ TORCH_LIBRARY_EXPAND(TORCH_EXTENSION_NAME, m) {
       "routed_scaling_factor, Tensor bias, int scoring_func) -> (Tensor, "
       "Tensor)");
   m.impl("grouped_topk", torch::kCUDA, &grouped_topk);
+
+  // cuBLAS bf16 x bf16 -> fp32 router GEMM (fallback for non-SM90 / batch > 16)
+  m.def("router_gemm_bf16_fp32(Tensor input, Tensor weight) -> Tensor");
+  m.impl("router_gemm_bf16_fp32", torch::kCUDA, &router_gemm_bf16_fp32);
+
+  // DeepSeek V3 optimized router GEMM for SM90+
+  m.def("dsv3_router_gemm(Tensor! output, Tensor mat_a, Tensor mat_b) -> ()");
+  // conditionally compiled so impl registration is in source file
 #endif
 }
 

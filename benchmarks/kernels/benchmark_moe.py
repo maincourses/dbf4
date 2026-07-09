@@ -9,13 +9,17 @@ import time
 from contextlib import nullcontext
 from datetime import datetime
 from itertools import product
-from typing import Any, TypedDict, Optional
+from typing import Any, TypedDict
 
 import ray
 import torch
 from ray.experimental.tqdm_ray import tqdm
 
 from vllm.model_executor.layers.fused_moe import fused_topk
+from vllm.model_executor.layers.fused_moe.activation import MoEActivation
+from vllm.model_executor.layers.fused_moe.all2all_utils import (
+    maybe_make_prepare_finalize,
+)
 from vllm.model_executor.layers.fused_moe.config import (
     FusedMoEConfig,
     FusedMoEParallelConfig,
@@ -27,14 +31,12 @@ from vllm.model_executor.layers.fused_moe.fused_moe import *
 from vllm.model_executor.layers.fused_moe.triton_deep_gemm_moe import (
     TritonOrDeepGemmExperts,
 )
-from vllm.platforms import current_platform
 from vllm.transformers_utils.config import get_config
 from vllm.triton_utils import triton
 from vllm.utils.argparse_utils import FlexibleArgumentParser
 from vllm.utils.torch_utils import set_random_seed
 
-# 移除全局的 current_platform 导入，改为在需要时局部导入
-# FP8_DTYPE = current_platform.fp8_dtype()
+FP8_DTYPE = current_platform.fp8_dtype()
 
 # Default interval for clearing Triton JIT cache during tuning
 # Set to 0 to disable automatic cache clearing
@@ -52,7 +54,7 @@ def clear_triton_cache():
 
     # Clear CUDA memory cache
     if torch.cuda.is_available():
-        torch.cuda.empty_cache()
+        torch.accelerator.empty_cache()
 
     # Try to clear Triton's runtime cache
     try:
@@ -89,7 +91,6 @@ class BenchmarkConfig(TypedDict):
     GROUP_SIZE_M: int
     num_warps: int
     num_stages: int
-    num_ldmatrixes: Optional[int]
 
 
 def benchmark_config(
@@ -102,89 +103,89 @@ def benchmark_config(
     dtype: torch.dtype,
     use_fp8_w8a8: bool,
     use_int8_w8a16: bool,
+    use_int4_w4a16: bool = False,
     num_iters: int = 100,
     block_quant_shape: list[int] = None,
     use_deep_gemm: bool = False,
-    nn_moe: Optional[bool] = False
 ) -> float:
-    from vllm.platforms import current_platform
-    device = torch.cuda.current_device()
-
     init_dtype = torch.float16 if use_fp8_w8a8 else dtype
-    x = torch.randn(num_tokens, hidden_size, dtype=dtype, device=device)
-    if use_int8_w8a16:
-        if not nn_moe:
-            w1 = torch.randint(
-                -127,
-                127,
-                (
-                    num_experts,
-                    shard_intermediate_size,
-                    hidden_size,
-                ),
-                dtype=torch.int8,
-                device=device,
-            )
-            w2 = torch.randint(
-                -127,
-                127,
-                (
-                    num_experts,
-                    hidden_size,
-                    shard_intermediate_size // 2,
-                ),
-                dtype=torch.int8,
-                device=device,
-            )
-        else:
-            w1 = torch.randint(
-                -127,
-                127,
-                (
-                    num_experts,
-                    hidden_size,
-                    shard_intermediate_size,
-                ),
-                dtype=torch.int8,
-                device=device,
-            )
-            w2 = torch.randint(
-                -127,
-                127,
-                (
-                    num_experts,
-                    shard_intermediate_size // 2,
-                    hidden_size,
-                ),
-                dtype=torch.int8,
-                device=device,
-            )
+    x = torch.randn(num_tokens, hidden_size, dtype=dtype)
+    if use_int4_w4a16:
+        # Int4 packed weights: 2 int4 values per uint8 byte
+        # K dimension is packed (halved)
+        intermediate_size = shard_intermediate_size // 2  # after silu_and_mul
+        w1 = torch.randint(
+            0,
+            255,
+            (
+                num_experts,
+                shard_intermediate_size,
+                hidden_size // 2,  # int4 packing
+            ),
+            dtype=torch.uint8,
+        )
+        w2 = torch.randint(
+            0,
+            255,
+            (
+                num_experts,
+                hidden_size,
+                intermediate_size // 2,  # int4 packing
+            ),
+            dtype=torch.uint8,
+        )
+    elif use_int8_w8a16:
+        w1 = torch.randint(
+            -127,
+            127,
+            (
+                num_experts,
+                shard_intermediate_size,
+                hidden_size,
+            ),
+            dtype=torch.int8,
+        )
+        w2 = torch.randint(
+            -127,
+            127,
+            (
+                num_experts,
+                hidden_size,
+                shard_intermediate_size // 2,
+            ),
+            dtype=torch.int8,
+        )
     else:
-        if not nn_moe:
-            w1 = torch.randn(
-                num_experts, shard_intermediate_size, hidden_size, dtype=init_dtype, device=device
-            )
-            w2 = torch.randn(
-                num_experts, hidden_size, shard_intermediate_size // 2, dtype=init_dtype, device=device
-            )
-        else:
-            w1 = torch.randn(
-                num_experts, hidden_size, shard_intermediate_size, dtype=init_dtype, device=device
-            )
-            w2 = torch.randn(
-                num_experts, shard_intermediate_size // 2, hidden_size, dtype=init_dtype, device=device
-            )
-    gating_output = torch.randn(num_iters, num_tokens, num_experts, dtype=torch.float32, device=device)
+        w1 = torch.randn(
+            num_experts, shard_intermediate_size, hidden_size, dtype=init_dtype
+        )
+        w2 = torch.randn(
+            num_experts, hidden_size, shard_intermediate_size // 2, dtype=init_dtype
+        )
+    gating_output = torch.randn(num_iters, num_tokens, num_experts, dtype=torch.float32)
 
     w1_scale = None
     w2_scale = None
     a1_scale = None
     a2_scale = None
-    if use_int8_w8a16:
-        w1_scale = torch.randn(
-            (num_experts, 2 * shard_intermediate_size), dtype=torch.float32, device=device
+    if use_int4_w4a16:
+        if block_quant_shape is None:
+            raise ValueError("block_quant_shape is required for int4_w4a16")
+        group_size = block_quant_shape[1]
+        # Scales shape: (E, N, K // group_size) in fp16
+        w1_scale = torch.rand(
+            (num_experts, shard_intermediate_size, hidden_size // group_size),
+            dtype=dtype,
         )
-        w2_scale = torch.randn((hidden_size, num_experts), dtype=torch.float32, device=device)
+        w2_scale = torch.rand(
+            (num_experts, hidden_size, intermediate_size // group_size),
+            dtype=dtype,
+        )
+    elif use_int8_w8a16:
+        w1_scale = torch.randn(
+            (num_experts, 2 * shard_intermediate_size), dtype=torch.float32
+        )
+        w2_scale = torch.randn((hidden_size, num_experts), dtype=torch.float32)
     if use_deep_gemm:
         # we use the default block shape for deepgemm
         block_quant_shape = [128, 128]
@@ -200,26 +201,24 @@ def benchmark_config(
             k_tiles_w1 = (K + block_k - 1) // block_k
             k_tiles_w2 = (N + block_k - 1) // block_k
             w1_scale = (
-                torch.rand((E, n_tiles_w1, k_tiles_w1), dtype=torch.float32, device=device)
+                torch.rand((E, n_tiles_w1, k_tiles_w1), dtype=torch.float32)
                 * factor_for_scale
             )
             w2_scale = (
-                torch.rand((E, n_tiles_w2, k_tiles_w2), dtype=torch.float32, device=device)
+                torch.rand((E, n_tiles_w2, k_tiles_w2), dtype=torch.float32)
                 * factor_for_scale
             )
         else:
-            w1_scale = torch.randn(num_experts, dtype=torch.float32, device=device)
-            w2_scale = torch.randn(num_experts, dtype=torch.float32, device=device)
+            w1_scale = torch.randn(num_experts, dtype=torch.float32)
+            w2_scale = torch.randn(num_experts, dtype=torch.float32)
 
-        a1_scale = torch.randn(1, dtype=torch.float32, device=device)
-        a2_scale = torch.randn(1, dtype=torch.float32, device=device)
+        a1_scale = torch.randn(1, dtype=torch.float32)
+        a2_scale = torch.randn(1, dtype=torch.float32)
 
-        # 获取 FP8_DTYPE
-        FP8_DTYPE = current_platform.fp8_dtype()
         w1 = w1.to(FP8_DTYPE)
         w2 = w2.to(FP8_DTYPE)
 
-    input_gating = torch.empty(num_tokens, num_experts, dtype=torch.float32, device=device)
+    input_gating = torch.empty(num_tokens, num_experts, dtype=torch.float32)
 
     def prepare(i: int):
         input_gating.copy_(gating_output[i])
@@ -241,27 +240,38 @@ def benchmark_config(
             a1_scale=a1_scale,
             a2_scale=a2_scale,
             block_shape=block_quant_shape,
+            weight_dtype="int4" if use_int4_w4a16 else None,
         )
 
         deep_gemm_experts = None
         if use_deep_gemm:
-            deep_gemm_experts = mk.FusedMoEModularKernel(
-                prepare_finalize=MoEPrepareAndFinalizeNoEP(),
+            moe_config = (
+                FusedMoEConfig(
+                    num_experts=num_experts,
+                    experts_per_token=topk,
+                    hidden_dim=hidden_size,
+                    intermediate_size_per_partition=shard_intermediate_size,
+                    num_local_experts=num_experts,
+                    num_logical_experts=num_experts,
+                    activation=MoEActivation.SILU,
+                    moe_parallel_config=FusedMoEParallelConfig.make_no_parallel(),
+                    in_dtype=init_dtype,
+                    routing_method=RoutingMethodType.TopK,
+                    device="cuda",
+                ),
+            )
+            deep_gemm_experts = mk.FusedMoEKernel(
+                prepare_finalize=maybe_make_prepare_finalize(
+                    moe=moe_config,
+                    quant_config=quant_config,
+                    allow_new_interface=True,
+                    use_monolithic=False,
+                ),
                 fused_experts=TritonOrDeepGemmExperts(
-                    moe_config=FusedMoEConfig(
-                        num_experts=num_experts,
-                        experts_per_token=topk,
-                        hidden_dim=hidden_size,
-                        intermediate_size_per_partition=shard_intermediate_size,
-                        num_local_experts=num_experts,
-                        activation="silu",
-                        moe_parallel_config=FusedMoEParallelConfig.make_no_parallel(),
-                        in_dtype=init_dtype,
-                        routing_method=RoutingMethodType.TopK,
-                        device="cuda",
-                    ),
+                    moe_config=moe_config,
                     quant_config=quant_config,
                 ),
+                inplace=not disable_inplace(),
             )
 
         with override_config(config):
@@ -269,9 +279,18 @@ def benchmark_config(
                 x, input_gating, topk, renormalize=not use_deep_gemm
             )
 
+            inplace = not disable_inplace()
             if use_deep_gemm:
-                return deep_gemm_experts(
-                    x, w1, w2, topk_weights, topk_ids, inplace=True
+                return deep_gemm_experts.apply(
+                    x,
+                    w1,
+                    w2,
+                    topk_weights,
+                    topk_ids,
+                    activation=MoEActivation.SILU,
+                    global_num_experts=num_experts,
+                    apply_router_weight_on_input=False,
+                    expert_map=False,
                 )
             return fused_experts(
                 x,
@@ -279,27 +298,25 @@ def benchmark_config(
                 w2,
                 topk_weights,
                 topk_ids,
-                inplace=True,
+                inplace=inplace,
                 quant_config=quant_config,
-                use_nn_moe=nn_moe,
             )
 
     # JIT compilation & warmup
     run()
-    torch.cuda.synchronize()
+    torch.accelerator.synchronize()
 
     # Capture 10 invocations with CUDA graph
     graph = torch.cuda.CUDAGraph()
     with torch.cuda.graph(graph):
         for _ in range(10):
             run()
-    torch.cuda.synchronize()
+    torch.accelerator.synchronize()
 
     # Warmup
     for _ in range(5):
         graph.replay()
-        # run()
-    torch.cuda.synchronize()
+    torch.accelerator.synchronize()
 
     start_event = torch.Event(enable_timing=True)
     end_event = torch.Event(enable_timing=True)
@@ -307,11 +324,10 @@ def benchmark_config(
     latencies: list[float] = []
     for i in range(num_iters):
         prepare(i)
-        torch.cuda.synchronize()
+        torch.accelerator.synchronize()
 
         start_event.record()
         graph.replay()
-        # run()
         end_event.record()
         end_event.synchronize()
         latencies.append(start_event.elapsed_time(end_event))
@@ -320,47 +336,39 @@ def benchmark_config(
     return avg
 
 
-def get_rocm_tuning_space(use_fp16, nn_moe: Optional[bool] = False):
-    block_m_range = [16, 32, 64, 128, 256]
-    block_n_range = [32, 64, 128, 256]
-    block_k_range = [32, 64, 128, 256]
+def get_rocm_tuning_space(use_fp16):
+    block_mn_range = [16, 32, 64, 128, 256]
+    block_k_range = [16, 32, 64, 128, 256]
     if not use_fp16:
         block_k_range.remove(16)  # BLOCK_K=16 not supported for fp8
     num_warps_range = [1, 2, 4, 8]
     group_m_range = [1, 4, 8, 16, 32]
     num_stage_range = [2]
-    # waves_per_eu_range = [0, 1, 2, 4]
-    # matrix_instr_nonkdim_range = [16, 32] if use_fp16 else []
-    # kpack_range = [1, 2] if use_fp16 else []
+    waves_per_eu_range = [0, 1, 2, 4]
+    matrix_instr_nonkdim_range = [16, 32] if use_fp16 else []
+    kpack_range = [1, 2] if use_fp16 else []
 
     param_ranges = {
-        "BLOCK_SIZE_M": block_m_range,
-        "BLOCK_SIZE_N": block_n_range,
+        "BLOCK_SIZE_M": block_mn_range,
+        "BLOCK_SIZE_N": block_mn_range,
         "BLOCK_SIZE_K": block_k_range,
         "GROUP_SIZE_M": group_m_range,
         "num_warps": num_warps_range,
         "num_stages": num_stage_range,
-        # "waves_per_eu": waves_per_eu_range,
+        "waves_per_eu": waves_per_eu_range,
     }
-    if nn_moe:
-        param_ranges["num_ldmatrixes"] = [1]
-    
-    # DCU currently does not support the following parameters
-    # if use_fp16:
-    #     param_ranges["matrix_instr_nonkdim"] = matrix_instr_nonkdim_range
-    #     param_ranges["kpack"] = kpack_range
+    if use_fp16:
+        param_ranges["matrix_instr_nonkdim"] = matrix_instr_nonkdim_range
+        param_ranges["kpack"] = kpack_range
 
     return param_ranges
 
 
-def get_configs_compute_bound(use_fp16, block_quant_shape, nn_moe: Optional[bool] = False) -> list[dict[str, int]]:
+def get_configs_compute_bound(use_fp16, block_quant_shape) -> list[dict[str, int]]:
     configs: list[BenchmarkConfig] = []
-    
-    # 局部导入 current_platform
-    from vllm.platforms import current_platform
 
     if current_platform.is_rocm():
-        param_ranges = get_rocm_tuning_space(use_fp16, nn_moe)
+        param_ranges = get_rocm_tuning_space(use_fp16)
     else:
         # Reduced search space for faster tuning.
         # TODO(woosuk): Increase the search space and use a performance model to
@@ -435,11 +443,10 @@ def prune_rocm_configs(M, N, K, configs, is_fp16=True):
         BLOCK_SIZE_K = config.get("BLOCK_SIZE_K")
         num_warps = config.get("num_warps")
 
-        # DCU currently does not support matrix_instr_nonkdim param
-        # if is_fp16:
-        #     matrix_instr_nonkdim = config.get("matrix_instr_nonkdim")
-        #     if matrix_instr_nonkdim > mfma:
-        #         continue
+        if is_fp16:
+            matrix_instr_nonkdim = config.get("matrix_instr_nonkdim")
+            if matrix_instr_nonkdim > mfma:
+                continue
         if mfma == 4 and BLOCK_SIZE_K < 64:
             continue
         # some layouts could not work properly in case
@@ -448,19 +455,16 @@ def prune_rocm_configs(M, N, K, configs, is_fp16=True):
             continue
         SPLIT_K = config.get("SPLIT_K", 1)
         GROUP_M = config.get("GROUP_SIZE_M")
-
-        # DCU currently does not support matrix_instr_nonkdim param
-        # if is_fp16:
-        #     if (
-        #         matrix_instr_nonkdim > BLOCK_SIZE_M
-        #         or matrix_instr_nonkdim > BLOCK_SIZE_N
-        #     ):
-        #         continue
-        #     if matrix_instr_nonkdim >= M and matrix_instr_nonkdim != BLOCK_SIZE_M:
-        #         continue
-        #     if matrix_instr_nonkdim >= N and matrix_instr_nonkdim != BLOCK_SIZE_N:
-        #         continue
-        
+        if is_fp16:
+            if (
+                matrix_instr_nonkdim > BLOCK_SIZE_M
+                or matrix_instr_nonkdim > BLOCK_SIZE_N
+            ):
+                continue
+            if matrix_instr_nonkdim >= M and matrix_instr_nonkdim != BLOCK_SIZE_M:
+                continue
+            if matrix_instr_nonkdim >= N and matrix_instr_nonkdim != BLOCK_SIZE_N:
+                continue
         # Skip BLOCK_SIZE that is too large compare to M/N
         # unless BLOCK_SIZE is already small enough
         if M * 2 < BLOCK_SIZE_M and BLOCK_SIZE_M != 16:
@@ -517,21 +521,14 @@ def merge_unique_dicts(list1, list2):
 
 @ray.remote(num_gpus=1)
 class BenchmarkWorker:
-    def __init__(self, seed: int, device_id: int) -> None:
-        from vllm.platforms import current_platform
-        import os
-        
-        if current_platform.is_rocm():
-            # In ROCm environment with Ray, let Ray handle device assignment
-            # Don't manually set default device as it may conflict with Ray's device mapping
-            pass
-        else:
-            torch.set_default_device("cuda:"+ str(device_id))
-
+    def __init__(self, seed: int) -> None:
+        torch.set_default_device("cuda")
         set_random_seed(seed)
         self.seed = seed
-        # Store the logical device ID for Ray
-        self.device_id = device_id
+        # Get the device ID to allocate tensors and kernels
+        # on the respective GPU. This is required for Ray to work
+        # correctly with multi-GPU tuning on the ROCm platform.
+        self.device_id = int(ray.get_gpu_ids()[0])
 
     def benchmark(
         self,
@@ -543,25 +540,25 @@ class BenchmarkWorker:
         dtype: torch.dtype,
         use_fp8_w8a8: bool,
         use_int8_w8a16: bool,
+        use_int4_w4a16: bool = False,
         block_quant_shape: list[int] = None,
         use_deep_gemm: bool = False,
-        nn_moe: Optional[bool] = False,
     ) -> tuple[dict[str, int], float]:
-        # 局部导入 current_platform
-        from vllm.platforms import current_platform
-        
-        from vllm.model_executor.layers.fused_moe.fused_moe import  get_moe_configs, get_default_config
+        # local import to allow serialization by ray
 
         set_random_seed(self.seed)
         dtype_str = _get_config_dtype_str(
-            dtype, use_int8_w8a16=use_int8_w8a16, use_fp8_w8a8=use_fp8_w8a8
+            dtype,
+            use_int8_w8a16=use_int8_w8a16,
+            use_fp8_w8a8=use_fp8_w8a8,
+            use_int4_w4a16=use_int4_w4a16,
         )
         # NOTE(woosuk): The current naming convention uses w2.shape[2], which
         # is the intermediate size after silu_and_mul.
         block_n = block_quant_shape[0] if block_quant_shape else None
         block_k = block_quant_shape[1] if block_quant_shape else None
         op_config = get_moe_configs(
-            num_experts, shard_intermediate_size // 2, dtype_str, block_n, block_k, use_nn_moe=nn_moe
+            num_experts, shard_intermediate_size // 2, dtype_str, block_n, block_k
         )
         if op_config is None:
             config = get_default_config(
@@ -572,7 +569,6 @@ class BenchmarkWorker:
                 topk,
                 dtype_str,
                 block_quant_shape,
-                use_nn_moe=nn_moe,
             )
         else:
             config = op_config[min(op_config.keys(), key=lambda x: abs(x - num_tokens))]
@@ -586,10 +582,10 @@ class BenchmarkWorker:
             dtype,
             use_fp8_w8a8,
             use_int8_w8a16,
+            use_int4_w4a16=use_int4_w4a16,
             num_iters=100,
             block_quant_shape=block_quant_shape,
             use_deep_gemm=use_deep_gemm,
-            use_nn_moe=nn_moe
         )
         return config, kernel_time
 
@@ -603,18 +599,18 @@ class BenchmarkWorker:
         dtype: torch.dtype,
         use_fp8_w8a8: bool,
         use_int8_w8a16: bool,
+        use_int4_w4a16: bool,
         search_space: list[dict[str, int]],
         block_quant_shape: list[int],
         use_deep_gemm: bool,
-        nn_moe: Optional[bool] = False,
     ) -> dict[str, int]:
+        # local import to allow serialization by ray
         from vllm.platforms import current_platform
-        import os
 
         best_config = None
         best_time = float("inf")
         if current_platform.is_rocm():
-            is_fp16 = not (use_fp8_w8a8 or use_int8_w8a16)
+            is_fp16 = not (use_fp8_w8a8 or use_int8_w8a16 or use_int4_w4a16)
             search_space = prune_rocm_search_space(
                 num_tokens,
                 shard_intermediate_size,
@@ -624,19 +620,17 @@ class BenchmarkWorker:
                 topk,
             )
 
-        # In ROCm environments with Ray, device context is already handled by Ray
-        # Using torch.cuda.device() may cause device ordinal conflicts
         need_device_guard = False
         if current_platform.is_rocm():
-            # For ROCm with Ray, skip additional device context management
-            need_device_guard = False
-        else:
-            # For other platforms, use device guard if needed
-            visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES", None)
-            if visible_devices is not None and len(visible_devices.split(',')) > 1:
+            visible_device = os.environ.get("ROCR_VISIBLE_DEVICES", None)
+            if visible_device != f"{self.device_id}":
                 need_device_guard = True
 
-        with torch.cuda.device(self.device_id) if need_device_guard else nullcontext():
+        with (
+            torch.accelerator.device_index(self.device_id)
+            if need_device_guard
+            else nullcontext()
+        ):
             for idx, config in enumerate(tqdm(search_space)):
                 try:
                     kernel_time = benchmark_config(
@@ -649,10 +643,11 @@ class BenchmarkWorker:
                         dtype,
                         use_fp8_w8a8,
                         use_int8_w8a16,
+                        use_int4_w4a16,
                         num_iters=20,
                         block_quant_shape=block_quant_shape,
                         use_deep_gemm=use_deep_gemm,
-                        nn_moe=nn_moe)
+                    )
                 except triton.runtime.autotuner.OutOfResources:
                     # Some configurations may be invalid and fail to compile.
                     continue
@@ -680,7 +675,6 @@ class BenchmarkWorker:
 
 
 def sort_config(config: BenchmarkConfig) -> BenchmarkConfig:
-
     return {
         "BLOCK_SIZE_M": config["BLOCK_SIZE_M"],
         "BLOCK_SIZE_N": config["BLOCK_SIZE_N"],
@@ -688,9 +682,6 @@ def sort_config(config: BenchmarkConfig) -> BenchmarkConfig:
         "GROUP_SIZE_M": config["GROUP_SIZE_M"],
         "num_warps": config["num_warps"],
         "num_stages": config["num_stages"],
-        **(
-            {"num_ldmatrixes": config["num_ldmatrixes"]} if "num_ldmatrixes" in config else {}
-        ),
         **(
             {"waves_per_eu": config["waves_per_eu"]} if "waves_per_eu" in config else {}
         ),
@@ -700,6 +691,7 @@ def sort_config(config: BenchmarkConfig) -> BenchmarkConfig:
             else {}
         ),
         **({"kpack": config["kpack"]} if "kpack" in config else {}),
+        **({"SPLIT_K": config["SPLIT_K"]} if "SPLIT_K" in config else {}),
     }
 
 
@@ -712,18 +704,21 @@ def save_configs(
     dtype: torch.dtype,
     use_fp8_w8a8: bool,
     use_int8_w8a16: bool,
+    use_int4_w4a16: bool,
     block_quant_shape: list[int],
     save_dir: str,
-    use_nn_moe: Optional[bool] = False,
 ) -> None:
     dtype_str = _get_config_dtype_str(
-        dtype, use_int8_w8a16=use_int8_w8a16, use_fp8_w8a8=use_fp8_w8a8
+        dtype,
+        use_int8_w8a16=use_int8_w8a16,
+        use_fp8_w8a8=use_fp8_w8a8,
+        use_int4_w4a16=use_int4_w4a16,
     )
 
     # NOTE(woosuk): The current naming convention uses w2.shape[2], which
     # is the intermediate size after silu_and_mul.
     filename = get_config_file_name(
-        num_experts, shard_intermediate_size // 2, dtype_str, block_quant_shape, use_nn_moe=use_nn_moe
+        num_experts, shard_intermediate_size // 2, dtype_str, block_quant_shape
     )
     os.makedirs(save_dir, exist_ok=True)
     filename = os.path.join(save_dir, filename)
@@ -733,28 +728,28 @@ def save_configs(
         f.write("\n")
 
 
+def get_compressed_tensors_block_structure(config, default_value=None):
+    config_groups = config.get("config_groups", {})
+    if len(config_groups) != 1:
+        return default_value
+    group = next(iter(config_groups.values()))
+    weights = group.get("weights", {})
+    block_structure = weights.get("block_structure", default_value)
+    return block_structure
+
+
 def get_weight_block_size_safety(config, default_value=None):
     quantization_config = getattr(config, "quantization_config", {})
     if isinstance(quantization_config, dict):
-        return quantization_config.get("weight_block_size", default_value)
+        if "weight_block_size" in quantization_config:
+            return quantization_config["weight_block_size"]
+        return get_compressed_tensors_block_structure(
+            quantization_config, default_value
+        )
     return default_value
 
 
-def main(args: argparse.Namespace):
-    import os
-    import logging
-
-    from vllm.platforms import current_platform
-    
-    logger = logging.getLogger(__name__)
-
-    print(args)
-    
-    tp_size = args.tp_size
-    config = get_config(model=args.model, trust_remote_code=args.trust_remote_code)
-    if args.model_prefix:
-        config = getattr(config, args.model_prefix)
-
+def get_model_params(config):
     if config.architectures[0] == "DbrxForCausalLM":
         E = config.ffn_config.moe_num_experts
         topk = config.ffn_config.moe_top_k
@@ -773,6 +768,7 @@ def main(args: argparse.Namespace):
         "Glm4MoeForCausalLM",
         "Glm4MoeLiteForCausalLM",
         "NemotronHForCausalLM",
+        "MistralLarge3ForCausalLM",
     ):
         E = config.n_routed_experts
         topk = config.num_experts_per_tok
@@ -793,20 +789,20 @@ def main(args: argparse.Namespace):
         topk = text_config.num_experts_per_tok
         intermediate_size = text_config.moe_intermediate_size
         hidden_size = text_config.hidden_size
-    elif config.architectures[0] in ("HunYuanMoEV1ForCausalLM"):
+    elif config.architectures[0] == "HunYuanMoEV1ForCausalLM":
         E = config.num_experts
         topk = config.moe_topk[0]
         intermediate_size = config.moe_intermediate_size[0]
         hidden_size = config.hidden_size
-    elif config.architectures[0] in ("Step3VLForConditionalGeneration"):
-        E = config.text_config.moe_num_experts
-        topk = config.text_config.moe_top_k
-        intermediate_size = config.text_config.moe_intermediate_size
-    elif config.architectures[0] in ["Qwen3OmniMoeForConditionalGeneration"]:
+    elif config.architectures[0] == "Qwen3OmniMoeForConditionalGeneration":
         E = config.thinker_config.text_config.num_experts
         topk = config.thinker_config.text_config.num_experts_per_tok
         intermediate_size = config.thinker_config.text_config.moe_intermediate_size
         hidden_size = config.thinker_config.text_config.hidden_size
+    elif config.architectures[0] == "PixtralForConditionalGeneration":
+        # Pixtral can contain different LLM architectures,
+        # recurse to get their parameters
+        return get_model_params(config.get_text_config())
     else:
         # Support for llama4
         config = config.get_text_config()
@@ -815,18 +811,73 @@ def main(args: argparse.Namespace):
         topk = config.num_experts_per_tok
         intermediate_size = config.intermediate_size
         hidden_size = config.hidden_size
+    return E, topk, intermediate_size, hidden_size
+
+
+def get_quantization_group_size(config) -> int | None:
+    """Extract the quantization group size from the HF model config.
+
+    This reads directly from the HuggingFace config object (as returned by
+    ``get_config()``), not from vLLM's quantization config classes.
+
+    Supports AWQ/GPTQ-style configs (direct 'group_size' key) and
+    compressed-tensors configs (nested inside 'config_groups').
+    """
+    quantization_config = getattr(config, "quantization_config", {})
+    if not isinstance(quantization_config, dict):
+        return None
+    # AWQ / GPTQ style: group_size is a top-level key
+    gs = quantization_config.get("group_size")
+    if gs is not None:
+        return gs
+    # compressed-tensors style: group_size is nested in config_groups
+    config_groups = quantization_config.get("config_groups", {})
+    if not isinstance(config_groups, dict):
+        return None
+    for group_cfg in config_groups.values():
+        if not isinstance(group_cfg, dict):
+            continue
+        weights = group_cfg.get("weights", {})
+        if not isinstance(weights, dict):
+            continue
+        gs = weights.get("group_size")
+        if gs is not None:
+            return gs
+    return None
+
+
+def main(args: argparse.Namespace):
+    print(args)
+
+    config = get_config(model=args.model, trust_remote_code=args.trust_remote_code)
+    if args.model_prefix:
+        config = getattr(config, args.model_prefix)
+    E, topk, intermediate_size, hidden_size = get_model_params(config)
     enable_ep = bool(args.enable_expert_parallel)
     if enable_ep:
-        ensure_divisibility(E, tp_size, "Number of experts")
-        E = E // tp_size
+        ensure_divisibility(E, args.tp_size, "Number of experts")
+        E = E // args.tp_size
         shard_intermediate_size = 2 * intermediate_size
     else:
         ensure_divisibility(intermediate_size, args.tp_size, "intermediate_size")
-        shard_intermediate_size = 2 * intermediate_size // tp_size
+        shard_intermediate_size = 2 * intermediate_size // args.tp_size
     dtype = torch.float16 if current_platform.is_rocm() else config.dtype
     use_fp8_w8a8 = args.dtype == "fp8_w8a8"
     use_int8_w8a16 = args.dtype == "int8_w8a16"
+    use_int4_w4a16 = args.dtype == "int4_w4a16"
     block_quant_shape = get_weight_block_size_safety(config)
+    if use_int4_w4a16:
+        group_size = get_quantization_group_size(config)
+        if group_size is None:
+            raise ValueError(
+                "Could not determine group_size from model config. "
+                "The model's quantization_config must contain a 'group_size' "
+                "field (AWQ/GPTQ) or 'config_groups.*.weights.group_size' "
+                "(compressed-tensors)."
+            )
+        # For int4_w4a16, block_shape = [0, group_size]
+        # block_shape[0]=0 means no block quantization on N dimension
+        block_quant_shape = [0, group_size]
 
     if args.batch_size is None:
         batch_sizes = [
@@ -864,9 +915,9 @@ def main(args: argparse.Namespace):
         os.environ["ROCR_VISIBLE_DEVICES"] = val
         del os.environ["HIP_VISIBLE_DEVICES"]
 
-    ray.init(address=None, ignore_reinit_error=True, num_gpus=args.num_gpus)
+    ray.init()
     num_gpus = int(ray.available_resources()["GPU"])
-    workers = [BenchmarkWorker.remote(args.seed, i) for i in range(num_gpus)]
+    workers = [BenchmarkWorker.remote(args.seed) for _ in range(num_gpus)]
 
     def _distribute(method: str, inputs: list[Any]) -> list[Any]:
         outputs = []
@@ -880,8 +931,20 @@ def main(args: argparse.Namespace):
         return ray.get(outputs)
 
     if args.tune:
-        is_fp16 = not (use_fp8_w8a8 or use_int8_w8a16)
-        search_space = get_configs_compute_bound(is_fp16, block_quant_shape, args.nn_moe)
+        # int4_w4a16 weights are uint8-packed, not fp16; treat like fp8 for
+        # search space generation (no matrix_instr_nonkdim/kpack exploration).
+        is_fp16 = not (use_fp8_w8a8 or use_int8_w8a16 or use_int4_w4a16)
+        # For int4_w4a16, the group_size constraint on BLOCK_SIZE_K does not
+        # apply: the gptq_awq kernel handles arbitrary BLOCK_SIZE_K regardless
+        # of group_size. Skip block_quant_shape filtering to keep the full
+        # search space (e.g. BLOCK_SIZE_K=64 with group_size=128).
+        tune_block_quant_shape = None if use_int4_w4a16 else block_quant_shape
+        search_space = get_configs_compute_bound(is_fp16, tune_block_quant_shape)
+        if use_int4_w4a16:
+            # SPLIT_K is a required kernel constexpr for gptq_awq kernel;
+            # only SPLIT_K=1 is used at runtime, so fix it during tuning.
+            for cfg in search_space:
+                cfg["SPLIT_K"] = 1
         print(f"Start tuning over {len(search_space)} configurations...")
         if use_deep_gemm:
             raise ValueError(
@@ -901,10 +964,10 @@ def main(args: argparse.Namespace):
                     dtype,
                     use_fp8_w8a8,
                     use_int8_w8a16,
+                    use_int4_w4a16,
                     search_space,
                     block_quant_shape,
                     use_deep_gemm,
-                    args.nn_moe,
                 )
                 for batch_size in batch_sizes
             ],
@@ -921,9 +984,9 @@ def main(args: argparse.Namespace):
             dtype,
             use_fp8_w8a8,
             use_int8_w8a16,
+            use_int4_w4a16,
             block_quant_shape,
             args.save_dir,
-            use_nn_moe=args.nn_moe,
         )
         end = time.time()
         print(f"Tuning took {end - start:.2f} seconds")
@@ -940,9 +1003,9 @@ def main(args: argparse.Namespace):
                     dtype,
                     use_fp8_w8a8,
                     use_int8_w8a16,
+                    use_int4_w4a16,
                     block_quant_shape,
                     use_deep_gemm,
-                    args.nn_moe,
                 )
                 for batch_size in batch_sizes
             ],
@@ -963,7 +1026,10 @@ if __name__ == "__main__":
     )
     parser.add_argument("--enable-expert-parallel", "-enable-ep", action="store_true")
     parser.add_argument(
-        "--dtype", type=str, choices=["auto", "fp8_w8a8", "int8_w8a16"], default="auto"
+        "--dtype",
+        type=str,
+        choices=["auto", "fp8_w8a8", "int8_w8a16", "int4_w4a16"],
+        default="auto",
     )
     parser.add_argument("--use-deep-gemm", action="store_true")
     parser.add_argument(
@@ -972,10 +1038,8 @@ if __name__ == "__main__":
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--batch-size", type=int, nargs="+", required=False)
     parser.add_argument("--tune", action="store_true")
-    parser.add_argument("--nn-moe", action='store_true', default=False)
     parser.add_argument("--trust-remote-code", action="store_true")
     parser.add_argument("--model-prefix", type=str, required=False)
-    parser.add_argument("--num-gpus", type=int, default=1)
     args = parser.parse_args()
 
     main(args)

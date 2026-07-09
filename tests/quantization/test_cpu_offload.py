@@ -4,12 +4,11 @@
 # Expanded quantized model tests for CPU offloading
 # Base tests: tests/basic_correctness/test_cpu_offload.py
 
-import os
 import pytest
 
 from tests.quantization.utils import is_quant_method_supported
 
-from ..utils import compare_two_settings, models_path_prefix
+from ..utils import compare_two_settings
 
 
 @pytest.mark.skipif(
@@ -19,7 +18,7 @@ from ..utils import compare_two_settings, models_path_prefix
 def test_cpu_offload_fp8():
     # Test loading a quantized checkpoint
     compare_two_settings(
-        os.path.join(models_path_prefix, "neuralmagic/Qwen2-1.5B-Instruct-FP8"),
+        "neuralmagic/Qwen2-1.5B-Instruct-FP8",
         ["--enforce_eager"],
         ["--enforce_eager", "--cpu-offload-gb", "1"],
         max_wait_seconds=480,
@@ -35,7 +34,7 @@ def test_cpu_offload_gptq(monkeypatch):
     monkeypatch.setenv("VLLM_TEST_FORCE_LOAD_FORMAT", "auto")
     # Test GPTQ Marlin
     compare_two_settings(
-        os.path.join(models_path_prefix, "Qwen/Qwen2-1.5B-Instruct-GPTQ-Int4"),
+        "Qwen/Qwen2-1.5B-Instruct-GPTQ-Int4",
         ["--enforce_eager"],
         ["--enforce_eager", "--cpu-offload-gb", "1"],
         max_wait_seconds=480,
@@ -51,7 +50,7 @@ def test_cpu_offload_awq(monkeypatch):
     monkeypatch.setenv("VLLM_TEST_FORCE_LOAD_FORMAT", "auto")
     # Test AWQ Marlin
     compare_two_settings(
-        os.path.join(models_path_prefix, "Qwen/Qwen2-1.5B-Instruct-AWQ"),
+        "Qwen/Qwen2-1.5B-Instruct-AWQ",
         ["--enforce_eager"],
         ["--enforce_eager", "--cpu-offload-gb", "1"],
         max_wait_seconds=480,
@@ -67,7 +66,7 @@ def test_cpu_offload_compressed_tensors(monkeypatch):
     monkeypatch.setenv("VLLM_TEST_FORCE_LOAD_FORMAT", "auto")
     # Test wNa16
     compare_two_settings(
-        os.path.join(models_path_prefix, "nm-testing/Qwen1.5-MoE-A2.7B-Chat-quantized.w4a16"),
+        "nm-testing/Qwen1.5-MoE-A2.7B-Chat-quantized.w4a16",
         ["--enforce_eager"],
         ["--enforce_eager", "--cpu-offload-gb", "1"],
         max_wait_seconds=480,
